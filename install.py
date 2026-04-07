@@ -38,6 +38,11 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 KERNEL_FILES = SCRIPT_DIR / "kernel-files"
 VERSION_FILE = SCRIPT_DIR / "VERSION"
 
+if not KERNEL_FILES.exists():
+    print(f"ERROR: kernel-files directory not found at {KERNEL_FILES}")
+    print("Are you running install.py from the ora-kernel repository?")
+    sys.exit(1)
+
 
 def get_version() -> str:
     return VERSION_FILE.read_text().strip()

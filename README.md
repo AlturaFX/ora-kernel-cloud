@@ -110,6 +110,34 @@ your-project/
     └── otel/                     # Collector config
 ```
 
+## Creating Custom Nodes
+
+The system self-expands when it encounters a task that no existing node can handle:
+
+1. The Kernel detects no matching node in `.claude/kernel/nodes/`
+2. It dispatches the **NodeDesigner** to analyze the gap and produce a spec
+3. The spec is verified, then **NodeCreator** generates the markdown files
+4. You approve the new node (HITL gate), and it's immediately available
+
+To create a node manually, follow the template in `.claude/kernel/schemas/node_spec.md`. Every worker node needs a paired verifier.
+
+## Triggering Tasks via the Event Queue
+
+Write JSON to `.claude/events/inbox.jsonl` to trigger the Kernel:
+
+```bash
+# Dispatch a task
+echo '{"id":"task_001","content":"/dispatch {\"goal\":\"Analyze the README for clarity\"}"}' >> .claude/events/inbox.jsonl
+
+# Trigger self-improvement
+echo '{"id":"improve_001","content":"/self-improve"}' >> .claude/events/inbox.jsonl
+
+# Send a plain-text task
+echo '{"id":"msg_001","content":"Write unit tests for the auth module"}' >> .claude/events/inbox.jsonl
+```
+
+The Kernel reads these when running `/kernel-listen` in the background.
+
 ## Requirements
 
 - Claude Code 2.1.89+

@@ -2,6 +2,8 @@
 
 This file configures the agentic kernel for a specific project. Each field answers a question that shapes how the system makes decisions. The Constitution (9 Axioms) defines universal rules; Project DNA defines mission-specific behavior.
 
+For examples of how to fill this in, see INTEGRATION.md section 5.
+
 Update this file when the project's goals or constraints change. This file is protected — changes require human approval.
 
 ---
