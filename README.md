@@ -139,17 +139,31 @@ echo '{"id":"msg_001","content":"Write unit tests for the auth module"}' >> .cla
 
 The Kernel reads these when running `/kernel-listen` in the background.
 
-## Heartbeat (Proactive Monitoring)
+## Proactive Features
 
-The Kernel can monitor your project proactively using a cron-based heartbeat. Install it with:
+### Heartbeat (Anomaly Detection)
+
+A cron-based health check that stays silent when everything is healthy:
 
 ```bash
-# Every 2 hours during work hours (8am-6pm, weekdays)
 crontab -e
+# Every 2 hours during work hours
 0 8-18/2 * * 1-5 /path/to/project/.claude/cron/heartbeat.sh /path/to/project
 ```
 
-When the heartbeat fires, the Kernel checks postgres for anomalies: stuck tasks, retry budgets near exhaustion, node failure rate spikes, and orphaned subagents. If everything is clean, it stays silent. If something needs attention, it writes to `pending_briefing.md` so you see it when you next interact.
+Checks for: stuck tasks, retry budgets near exhaustion, node failure rate spikes, orphaned subagents. Only surfaces issues that need attention.
+
+### Daily Briefing
+
+A morning summary of project status with suggested priorities:
+
+```bash
+crontab -e
+# Every weekday at 8am
+0 8 * * 1-5 /path/to/project/.claude/cron/daily_briefing.sh /path/to/project
+```
+
+Covers: yesterday's completions and failures, pending work ranked by priority, system health, self-improvement cycle status. Written to `pending_briefing.md` and presented when you next open the TUI.
 
 ## Requirements
 

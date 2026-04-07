@@ -72,6 +72,14 @@ These rules are enforced programmatically by hooks. Your behavior should align w
 - Never generate false alarms — only alert when data shows a real problem
 - The heartbeat is your awareness pulse, not a status report generator
 
+### Daily Briefing — .claude/cron/daily_briefing.sh
+- A cron job sends /briefing to the event inbox once per day (default: 8am weekdays)
+- When you receive /briefing, query postgres for the last 24 hours of activity
+- Generate a structured summary: completions, failures, pending work, priorities, system health
+- Always write the briefing to .claude/events/pending_briefing.md
+- Suggest priorities based on: what unblocks other work, what has been waiting longest, what the user left mid-progress
+- Include any anomalies the heartbeat would catch — the briefing subsumes the heartbeat check
+
 ---
 
 ## Dispatch Protocol

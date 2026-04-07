@@ -49,6 +49,91 @@ Trigger the self-improvement cycle:
 4. Present all proposals to the user for HITL approval
 5. Apply approved changes
 
+### `/briefing`
+Generate a daily project summary and suggested priorities. Query postgres for recent activity then write a structured briefing to `.claude/events/pending_briefing.md`.
+
+**1. Yesterday's activity** — what happened since the last briefing:
+```sql
+SELECT action, COUNT(*) AS count,
+       COUNT(DISTINCT task_id) AS unique_tasks
+FROM orch_activity_log
+WHERE created_at > NOW() - INTERVAL '24 hours'
+GROUP BY action
+ORDER BY count DESC;
+```
+
+**2. Completed work:**
+```sql
+SELECT t.task_title, n.name AS node_name,
+       t.completed_at, t.retry_count
+FROM orch_tasks t
+LEFT JOIN orch_nodes n ON t.node_id = n.id
+WHERE t.status = 'COMPLETE'
+  AND t.completed_at > NOW() - INTERVAL '24 hours'
+ORDER BY t.completed_at DESC;
+```
+
+**3. Failed work** — what needs a new approach:
+```sql
+SELECT t.task_title, n.name AS node_name,
+       t.retry_count, t.max_retries,
+       t.result_data->>'error' AS last_error
+FROM orch_tasks t
+LEFT JOIN orch_nodes n ON t.node_id = n.id
+WHERE t.status = 'FAILED'
+  AND t.updated_at > NOW() - INTERVAL '24 hours'
+ORDER BY t.updated_at DESC;
+```
+
+**4. Pending work** — what's queued and ready:
+```sql
+SELECT t.task_title, t.status, t.budget_size, t.created_at,
+       t.is_awaiting_human
+FROM orch_tasks t
+WHERE t.status IN ('NEW', 'INCOMPLETE', 'UNVERIFIED')
+ORDER BY
+  CASE t.budget_size
+    WHEN 'S' THEN 1 WHEN 'M' THEN 2
+    WHEN 'L' THEN 3 WHEN 'XL' THEN 4
+  END,
+  t.created_at;
+```
+
+**5. Self-improvement status:**
+```sql
+SELECT value FROM orch_config WHERE key = 'self_improvement_threshold';
+```
+Check `/tmp/claude-kernel/*/completed_count` against the threshold — how close to the next self-improvement cycle?
+
+**6. Any active anomalies** — include the heartbeat anomaly checks.
+
+**Format the briefing as:**
+
+```markdown
+# Daily Briefing — {date}
+
+## Yesterday
+- {N} tasks completed, {M} failed, {P} still pending
+- Notable completions: {list}
+- Notable failures: {list with brief error context}
+
+## Today's Priorities
+1. {Highest priority pending task — reasoning for why}
+2. {Next priority — reasoning}
+3. {Next — reasoning}
+
+## Attention Needed
+- {Any HITL-awaiting tasks}
+- {Any anomalies from heartbeat checks}
+- {Self-improvement cycle status}
+
+## System Health
+- Node performance: {any nodes with >20% failure rate}
+- Budget status: {any tasks near retry limits}
+```
+
+**Priority reasoning**: Consider task dependencies (what unblocks other work), budget size (smaller tasks clear backlogs), failure recency (recently failed tasks may have fresh context), and HITL items (humans waiting = highest priority).
+
 ### `/dispatch {json}`
 Parse the task JSON and execute the full Kernel lifecycle:
 1. Classify intent from the task description
