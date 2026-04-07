@@ -99,6 +99,7 @@ your-project/
 │   ├── agents.yaml               # Node/command registry (merged)
 │   ├── hooks/                    # 6 enforcement scripts
 │   ├── commands/                 # kernel-listen, self-improve
+│   ├── cron/                     # heartbeat and scheduled triggers
 │   ├── events/                   # inbox queue + pending briefing
 │   └── kernel/
 │       ├── schemas/              # NodeOutput, NodeSpec, SplitSpec
@@ -137,6 +138,18 @@ echo '{"id":"msg_001","content":"Write unit tests for the auth module"}' >> .cla
 ```
 
 The Kernel reads these when running `/kernel-listen` in the background.
+
+## Heartbeat (Proactive Monitoring)
+
+The Kernel can monitor your project proactively using a cron-based heartbeat. Install it with:
+
+```bash
+# Every 2 hours during work hours (8am-6pm, weekdays)
+crontab -e
+0 8-18/2 * * 1-5 /path/to/project/.claude/cron/heartbeat.sh /path/to/project
+```
+
+When the heartbeat fires, the Kernel checks postgres for anomalies: stuck tasks, retry budgets near exhaustion, node failure rate spikes, and orphaned subagents. If everything is clean, it stays silent. If something needs attention, it writes to `pending_briefing.md` so you see it when you next interact.
 
 ## Requirements
 

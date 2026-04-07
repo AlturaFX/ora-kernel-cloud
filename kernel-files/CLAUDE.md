@@ -64,6 +64,14 @@ These rules are enforced programmatically by hooks. Your behavior should align w
 - The block message includes current subagent status so you have context without polling
 - Background agents notify you on completion — trust the notification system
 
+### Heartbeat — .claude/cron/heartbeat.sh
+- A cron job sends /heartbeat to the event inbox at a configured interval (default: every 2 hours)
+- When you receive /heartbeat, run anomaly detection queries against postgres
+- If ALL checks return clean results, do NOTHING — no output, no briefing entry (HEARTBEAT_OK)
+- If ANY check finds an anomaly, write a summary to .claude/events/pending_briefing.md
+- Never generate false alarms — only alert when data shows a real problem
+- The heartbeat is your awareness pulse, not a status report generator
+
 ---
 
 ## Dispatch Protocol

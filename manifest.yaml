@@ -81,6 +81,13 @@ files:
     strategy: create_if_absent
     description: "Async results buffer — presented when user next interacts"
 
+  # === Cron scripts (kernel-owned) ===
+  - source: .claude/cron/
+    target: .claude/cron/
+    strategy: copy_always
+    is_directory: true
+    description: "Heartbeat and scheduled trigger scripts for crontab"
+
   # === Kernel system (entirely kernel-owned) ===
   - source: .claude/kernel/
     target: .claude/kernel/

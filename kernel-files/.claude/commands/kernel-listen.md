@@ -58,11 +58,57 @@ Parse the task JSON and execute the full Kernel lifecycle:
 5. Log results
 
 ### `/heartbeat`
-System health check:
-1. Query postgres for tasks in NEW or INCOMPLETE status
-2. Check for any stuck tasks (dispatched but no completion)
-3. Review subagent status files in `/tmp/claude-kernel/`
-4. Report summary
+Proactive system health check. Stay SILENT if nothing is wrong (the HEARTBEAT_OK pattern).
+
+Run these anomaly checks via the postgres MCP:
+
+**1. Stuck tasks** — dispatched but not completed within expected time:
+```sql
+SELECT id, task_title, status, dispatched_at,
+       EXTRACT(EPOCH FROM (NOW() - dispatched_at))/3600 AS hours_stuck
+FROM orch_tasks
+WHERE dispatched_at IS NOT NULL
+  AND status IN ('INCOMPLETE', 'UNVERIFIED')
+  AND dispatched_at < NOW() - INTERVAL '2 hours'
+ORDER BY dispatched_at;
+```
+
+**2. Retry budget warnings** — tasks approaching their retry limit:
+```sql
+SELECT t.id, t.task_title, t.retry_count, t.max_retries,
+       t.retry_count::float / t.max_retries AS exhaustion_pct
+FROM orch_tasks t
+WHERE t.status NOT IN ('COMPLETE', 'FAILED', 'CANCELLED')
+  AND t.retry_count >= t.max_retries - 1
+ORDER BY exhaustion_pct DESC;
+```
+
+**3. Node failure rate spike** — nodes failing more than 30% in recent tasks:
+```sql
+SELECT node_name, COUNT(*) AS total,
+       COUNT(*) FILTER (WHERE action = 'FAIL') AS failures,
+       ROUND(COUNT(*) FILTER (WHERE action = 'FAIL')::numeric / COUNT(*) * 100, 1) AS fail_pct
+FROM orch_activity_log
+WHERE created_at > NOW() - INTERVAL '24 hours'
+  AND action IN ('COMPLETE', 'FAIL')
+GROUP BY node_name
+HAVING COUNT(*) >= 3
+   AND COUNT(*) FILTER (WHERE action = 'FAIL')::numeric / COUNT(*) > 0.3;
+```
+
+**4. Orphaned subagents** — check status files for agents started but never completed:
+```bash
+find /tmp/claude-kernel/ -name status.json -exec grep -l '"phase": "started"' {} \;
+```
+For each, check if start_time is more than 30 minutes ago.
+
+**Decision logic:**
+- If ALL checks return empty results → do nothing (HEARTBEAT_OK). No output, no briefing entry.
+- If ANY check returns results → write a summary to `.claude/events/pending_briefing.md` with:
+  - Which checks triggered
+  - Specific task IDs and names
+  - Recommended actions
+  - Severity (info / warning / critical)
 
 ### `/status`
 Report current state:

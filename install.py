@@ -143,6 +143,16 @@ def copy_kernel_owned(target: Path, dry_run: bool):
                 shutil.copy2(f, hooks_dst / f.name)
     log(f".claude/hooks/ ({sum(1 for _ in hooks_src.iterdir() if _.is_file())} files)", "COPY")
 
+    # Cron scripts
+    cron_src = KERNEL_FILES / ".claude" / "cron"
+    if cron_src.exists():
+        cron_dst = target / ".claude" / "cron"
+        if not dry_run:
+            if cron_dst.exists():
+                shutil.rmtree(cron_dst)
+            shutil.copytree(cron_src, cron_dst)
+        log(f".claude/cron/ ({sum(1 for _ in cron_src.rglob('*') if _.is_file())} files)", "COPY")
+
     # Commands (create_if_absent)
     for cmd in ["self-improve.md"]:
         cmd_dst = target / ".claude" / "commands" / cmd
