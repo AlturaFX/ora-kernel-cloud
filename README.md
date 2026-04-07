@@ -95,4 +95,10 @@ your-project/
 
 ## License
 
-Apache 2.0
+Business Source License 1.1 (BSL)
+
+- Free for personal, educational, research, and internal business use
+- Cannot be repackaged or resold as a commercial product or service
+- Converts to Apache 2.0 on 2030-04-06 (4 years from initial release)
+
+See [LICENSE](LICENSE) for full terms.
