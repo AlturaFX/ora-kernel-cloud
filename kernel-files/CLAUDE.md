@@ -178,7 +178,7 @@ The HITL flag (`is_awaiting_human`) is orthogonal to status — a task preserves
 
 ## Inbox Message Routing
 
-When a message arrives in `.claude/chat/inbox.jsonl`:
+When a message arrives in `.claude/events/inbox.jsonl`:
 
 - `/self-improve` — trigger self-improvement cycle
 - `/dispatch {json}` — parse task spec, route to appropriate node, execute full lifecycle

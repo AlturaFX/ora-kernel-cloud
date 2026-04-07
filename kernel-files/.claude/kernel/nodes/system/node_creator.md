@@ -67,14 +67,14 @@ Example:
   "target_status": "UNVERIFIED",
   "inline_data": {
     "files": {
-      "forex_research_task.md": "---\nname: ForexResearchTaskNode\n...",
-      "forex_research_task_verifier.md": "---\nname: ForexResearchTaskVerifier\n..."
+      "data_analysis_task.md": "---\nname: DataAnalysisTaskNode\n...",
+      "data_analysis_task_verifier.md": "---\nname: DataAnalysisTaskVerifier\n..."
     },
     "registry_entry": {
-      "name": "ForexResearchTaskNode",
+      "name": "DataAnalysisTaskNode",
       "type": "task_node",
-      "quad": "ForexResearch",
-      "spec_path": ".claude/kernel/nodes/research/forex_research_task.md"
+      "quad": "DataAnalysis",
+      "spec_path": ".claude/kernel/nodes/analysis/data_analysis_task.md"
     }
   }
 }

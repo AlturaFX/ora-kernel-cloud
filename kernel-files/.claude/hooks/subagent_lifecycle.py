@@ -19,7 +19,7 @@ from pathlib import Path
 DEFAULT_SELF_IMPROVEMENT_THRESHOLD = 10
 
 # Paths
-CHAT_INBOX = ".claude/chat/inbox.jsonl"
+EVENT_INBOX = ".claude/events/inbox.jsonl"
 
 
 def get_status_dir(session_id: str, agent_id: str) -> Path:
@@ -150,7 +150,7 @@ def handle_stop(hook_input: dict):
     if count >= threshold:
         # Trigger self-improvement
         project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
-        inbox_path = os.path.join(project_dir, CHAT_INBOX) if project_dir else CHAT_INBOX
+        inbox_path = os.path.join(project_dir, EVENT_INBOX) if project_dir else EVENT_INBOX
 
         trigger_msg = {
             "id": f"self_improve_{int(time.time())}",

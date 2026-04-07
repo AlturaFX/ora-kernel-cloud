@@ -35,11 +35,11 @@ files:
     description: "Node/command registry (merged via YAML section markers)"
 
   # === Commands ===
-  - source: .claude/commands/chat-listen.md
-    target: .claude/commands/chat-listen.md
+  - source: .claude/commands/kernel-listen.md
+    target: .claude/commands/kernel-listen.md
     strategy: rename_if_exists
     rename_to: .claude/commands/ora-kernel-listen.md
-    description: "Kernel event loop — renamed if project already has chat-listen"
+    description: "Kernel event loop — renamed if project already has kernel-listen"
 
   - source: .claude/commands/self-improve.md
     target: .claude/commands/self-improve.md
@@ -71,13 +71,13 @@ files:
     target: .claude/hooks/session_init.sh
     strategy: copy_always
 
-  # === Chat infrastructure ===
-  - source: .claude/chat/inbox.jsonl
-    target: .claude/chat/inbox.jsonl
+  # === Event queue infrastructure ===
+  - source: .claude/events/inbox.jsonl
+    target: .claude/events/inbox.jsonl
     strategy: create_if_absent
 
-  - source: .claude/chat/outbox.jsonl
-    target: .claude/chat/outbox.jsonl
+  - source: .claude/events/outbox.jsonl
+    target: .claude/events/outbox.jsonl
     strategy: create_if_absent
 
   # === Kernel system (entirely kernel-owned) ===

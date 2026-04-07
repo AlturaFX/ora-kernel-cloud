@@ -1,6 +1,6 @@
 # Kernel Decision Framework
 
-When the Kernel (main agent) receives input — whether from the user, inbox.jsonl, or a completed subagent — it reasons through these priorities. Unlike the original ORA design which used hardcoded P1-P8 logic, the Kernel uses Opus reasoning guided by these priorities as a framework, not a rigid sequence.
+When the Kernel (main agent) receives input — whether from the user, inbox.jsonl, or a completed subagent — it reasons through these priorities. The Kernel uses Opus reasoning guided by these priorities as a framework, not a rigid sequence. Priorities inform decisions but do not dictate a fixed execution order.
 
 ## Priority Order
 

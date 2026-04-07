@@ -2,6 +2,31 @@
 
 A self-expanding agentic orchestration system for Claude Code. The Kernel uses Opus as the orchestrator — reasoning about priorities, delegating to specialized nodes (subagents), and enforcing a 9-axiom Constitution through programmatic hooks.
 
+## Why ORA?
+
+When you use Claude Code for complex, multi-step projects, you face real problems:
+
+- **No verification** — the agent that wrote the code also judges if it's correct (self-certification)
+- **Infinite loops** — failed approaches get retried without analysis
+- **No state tracking** — task progress, metrics, and history are lost between sessions
+- **No safety rails** — nothing prevents accidental deletion of critical files or runaway retries
+- **No improvement** — the same prompt weaknesses cause the same failures repeatedly
+
+ORA solves these by treating Claude as an **orchestrator, not a worker**. It dispatches specialized subagents for execution, requires separate verification for every work product, tracks everything in PostgreSQL, and automatically proposes system improvements based on performance data.
+
+This is **not a chat interface** — it's a workflow orchestration engine with constitutional guardrails.
+
+## Terminology
+
+| Term | Meaning |
+|------|---------|
+| **Kernel** | The main Claude Code agent. Orchestrates work, enforces the Constitution, dispatches nodes. |
+| **Node** | A markdown spec file defining a specialized subagent's system prompt, input/output contracts, and constraints. |
+| **Subagent** | A Claude Code Agent tool invocation dispatched by the Kernel to execute a node's prompt. |
+| **Quad** | A set of 4 nodes: Domain (planner) + Task (executor) + Domain Verifier + Task Verifier. |
+| **Constitution** | 9 immutable axioms that govern all system behavior. Enforced by hooks. |
+| **HITL** | Human-in-the-loop. The system pauses for human approval when required by the Constitution. |
+
 ## What It Does
 
 - **Orchestrates complex tasks** by decomposing them into subtasks, dispatching specialized subagents, and verifying results
@@ -37,7 +62,7 @@ python3 ora-kernel/install.py /path/to/your/project
    for f in infrastructure/ora-kernel/db/*.sql; do psql -d ora_kernel -f "$f"; done
    ```
 3. Restart Claude Code from your project root
-4. Run `/chat-listen` to start the Kernel event loop
+4. Run `/kernel-listen` to start the Kernel event loop
 5. Push the inotifywait command to background, then use the TUI normally
 
 ## Architecture
@@ -47,7 +72,7 @@ You (TUI) ←→ Claude Code (Kernel)
                  ├── Subagents (nodes) — dispatched via Agent tool
                  ├── Hooks — safety, loop detection, lifecycle tracking
                  ├── PostgreSQL — task state, metrics, activity log
-                 ├── inbox.jsonl — event triggers (cron, webhooks, subagent completion)
+                 ├── events/inbox.jsonl — event triggers (cron, webhooks, subagent completion)
                  └── Constitution (9 Axioms) — immutable rules enforced by hooks
 ```
 
@@ -73,8 +98,8 @@ your-project/
 │   ├── settings.json             # Hooks + permissions (merged)
 │   ├── agents.yaml               # Node/command registry (merged)
 │   ├── hooks/                    # 6 enforcement scripts
-│   ├── commands/                 # chat-listen, self-improve
-│   ├── chat/                     # inbox/outbox message queues
+│   ├── commands/                 # kernel-listen, self-improve
+│   ├── events/                   # inbox/outbox event queues
 │   └── kernel/
 │       ├── schemas/              # NodeOutput, NodeSpec, SplitSpec
 │       ├── nodes/                # System + self-improvement node specs

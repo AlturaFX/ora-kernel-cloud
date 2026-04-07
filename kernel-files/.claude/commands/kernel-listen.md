@@ -9,7 +9,7 @@ You are the Kernel's event loop. Your job is to watch for messages arriving in t
 
 ## How This Works
 
-1. Wait for .claude/chat/inbox.jsonl to change (using inotifywait — BLOCKS until change)
+1. Wait for .claude/events/inbox.jsonl to change (using inotifywait — BLOCKS until change)
 2. Read the new message
 3. Handle it according to message routing rules
 4. Go back to step 1
@@ -21,7 +21,7 @@ You are the Kernel's event loop. Your job is to watch for messages arriving in t
 Run this command directly (it will BLOCK until inbox.jsonl changes):
 
 ```bash
-inotifywait -e modify -e create .claude/chat/inbox.jsonl
+inotifywait -e modify -e create .claude/events/inbox.jsonl
 ```
 
 ## Step 2: Read the Message
@@ -29,7 +29,7 @@ inotifywait -e modify -e create .claude/chat/inbox.jsonl
 After inotifywait exits, read the latest message:
 
 ```bash
-tail -1 .claude/chat/inbox.jsonl
+tail -1 .claude/events/inbox.jsonl
 ```
 
 The message is JSON:
@@ -79,7 +79,7 @@ Interpret as a task or question:
 ### Responding
 Write responses to the outbox:
 ```bash
-echo '{"id":"resp_'$(date +%s)'","timestamp":"'$(date -Iseconds)'","role":"assistant","content":"YOUR RESPONSE"}' >> .claude/chat/outbox.jsonl
+echo '{"id":"resp_'$(date +%s)'","timestamp":"'$(date -Iseconds)'","role":"assistant","content":"YOUR RESPONSE"}' >> .claude/events/outbox.jsonl
 ```
 
 ## Step 4: Listen Again
@@ -87,7 +87,7 @@ echo '{"id":"resp_'$(date +%s)'","timestamp":"'$(date -Iseconds)'","role":"assis
 After handling the message, go back to Step 1:
 
 ```bash
-inotifywait -e modify -e create .claude/chat/inbox.jsonl
+inotifywait -e modify -e create .claude/events/inbox.jsonl
 ```
 
 ## Rules

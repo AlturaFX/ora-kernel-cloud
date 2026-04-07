@@ -9,10 +9,10 @@
 
 
 commands:
-  chat-listen:
-    file: .claude/commands/chat-listen.md
+  kernel-listen:
+    file: .claude/commands/kernel-listen.md
     purpose: Kernel event loop — watches inbox for tasks, triggers, and messages
-    invocation: /chat-listen
+    invocation: /kernel-listen
     context: shared
 
   self-improve:

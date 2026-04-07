@@ -76,20 +76,20 @@ If there's a conflict, rename the project's hook before installing.
 
 ## 3. Command Deconflicting
 
-### The chat-listen collision
+### The kernel-listen collision
 
-Both the kernel and some projects use `chat-listen.md`. The kernel's version is the core event loop — it watches `inbox.jsonl` and dispatches tasks. A project's version might do something different (e.g., listen for dashboard test requests).
+Both the kernel and some projects use `kernel-listen.md`. The kernel's version is the core event loop — it watches `inbox.jsonl` and dispatches tasks. A project's version might do something different (e.g., listen for dashboard test requests).
 
-The installer handles this by renaming: if `chat-listen.md` exists, the kernel's version is installed as `ora-kernel-listen.md`.
+The installer handles this by renaming: if `kernel-listen.md` exists, the kernel's version is installed as `ora-kernel-listen.md`.
 
 **Should you merge them?** Consider:
-- If the project's chat-listen is a subset of what the kernel does (e.g., only handles `/test-start`) — merge the project's routing rules into the kernel's chat-listen.md under the message routing section.
+- If the project's kernel-listen is a subset of what the kernel does (e.g., only handles `/test-start`) — merge the project's routing rules into the kernel's kernel-listen.md under the message routing section.
 - If they serve truly different purposes — keep them separate. The kernel runs as background, the project's runs on demand.
-- If the project's chat-listen WAS the ORA kernel from a previous version — replace it with the new kernel version.
+- If the project's kernel-listen WAS the ORA kernel from a previous version — replace it with the new kernel version.
 
 ### Merging routing rules
 
-To merge a project's command routing into the kernel's chat-listen.md, add entries to the "Step 3: Handle the Message" section:
+To merge a project's command routing into the kernel's kernel-listen.md, add entries to the "Step 3: Handle the Message" section:
 
 ```markdown
 ### `/your-project-command`
@@ -114,11 +114,11 @@ node_designer:
 
 Some projects use:
 ```yaml
-chat-listen:
+kernel-listen:
   type: command
-  file: .claude/commands/chat-listen.md
+  file: .claude/commands/kernel-listen.md
   purpose: Listen for messages
-  invocation: /chat-listen
+  invocation: /kernel-listen
   triggers: [dashboard_message]
 ```
 
@@ -138,9 +138,9 @@ Project entries outside these markers are preserved. The kernel never touches th
 
 If you want a single consistent format, add a `source` field to distinguish:
 ```yaml
-  chat-listen:
+  kernel-listen:
     type: command
-    file: .claude/commands/chat-listen.md
+    file: .claude/commands/kernel-listen.md
     purpose: Listen for messages
     source: project           # ← project-owned entry
   

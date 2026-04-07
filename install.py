@@ -11,7 +11,7 @@ Phases:
     1. Pre-flight: scan target, detect conflicts
     2. Copy: non-conflicting files (kernel-owned, create-if-absent)
     3. Merge: CLAUDE.md (section markers), settings.json (JSON deep merge),
-             agents.yaml (section markers), chat-listen (rename if collision)
+             agents.yaml (section markers), kernel-listen (rename if collision)
     4. Infrastructure: copy namespaced, optionally run postgres migrations
     5. Report: summary + next steps
 
@@ -65,7 +65,7 @@ def preflight(target: Path) -> dict:
         "CLAUDE.md": "section_merge",
         ".claude/settings.json": "json_deep_merge",
         ".claude/agents.yaml": "section_merge",
-        ".claude/commands/chat-listen.md": "rename_if_exists",
+        ".claude/commands/kernel-listen.md": "rename_if_exists",
     }
 
     for rel_path, strategy in checks.items():
@@ -149,18 +149,18 @@ def copy_kernel_owned(target: Path, dry_run: bool):
         else:
             log(f".claude/commands/{cmd} (already exists)", "SKIP")
 
-    # Chat infrastructure (create_if_absent)
-    chat_dir = target / ".claude" / "chat"
+    # Event queue infrastructure (create_if_absent)
+    events_dir = target / ".claude" / "events"
     if not dry_run:
-        chat_dir.mkdir(parents=True, exist_ok=True)
+        events_dir.mkdir(parents=True, exist_ok=True)
     for f in ["inbox.jsonl", "outbox.jsonl"]:
-        fpath = chat_dir / f
+        fpath = events_dir / f
         if not fpath.exists():
             if not dry_run:
                 fpath.touch()
-            log(f".claude/chat/{f}", "COPY")
+            log(f".claude/events/{f}", "COPY")
         else:
-            log(f".claude/chat/{f} (already exists)", "SKIP")
+            log(f".claude/events/{f} (already exists)", "SKIP")
 
     # PROJECT_DNA.md (skip_if_exists)
     dna_dst = target / "PROJECT_DNA.md"
@@ -321,12 +321,12 @@ def merge_agents_yaml(target: Path, dry_run: bool):
     log("agents.yaml merged", "OK")
 
 
-def handle_chat_listen(target: Path, dry_run: bool):
-    """Handle chat-listen.md collision — rename if exists."""
-    print("\n🔀 Phase 3d: Handling chat-listen command")
+def handle_kernel_listen(target: Path, dry_run: bool):
+    """Handle kernel-listen.md collision — rename if exists."""
+    print("\n🔀 Phase 3d: Handling kernel-listen command")
 
-    target_cmd = target / ".claude" / "commands" / "chat-listen.md"
-    kernel_cmd = KERNEL_FILES / ".claude" / "commands" / "chat-listen.md"
+    target_cmd = target / ".claude" / "commands" / "kernel-listen.md"
+    kernel_cmd = KERNEL_FILES / ".claude" / "commands" / "kernel-listen.md"
 
     if target_cmd.exists():
         # Check if it's already the kernel version (has "Kernel listener" in first lines)
@@ -335,19 +335,19 @@ def handle_chat_listen(target: Path, dry_run: bool):
             # Already installed — overwrite
             if not dry_run:
                 shutil.copy2(kernel_cmd, target_cmd)
-            log("chat-listen.md updated (kernel version already installed)", "OK")
+            log("kernel-listen.md updated (kernel version already installed)", "OK")
         else:
             # Collision — install as alternate name
             alt_path = target / ".claude" / "commands" / "ora-kernel-listen.md"
             if not dry_run:
                 shutil.copy2(kernel_cmd, alt_path)
-            log(f"chat-listen.md collision detected — installed as ora-kernel-listen.md", "WARN")
-            log(f"  Existing chat-listen.md preserved ({len(existing_content)} bytes)", "SKIP")
+            log(f"kernel-listen.md collision detected — installed as ora-kernel-listen.md", "WARN")
+            log(f"  Existing kernel-listen.md preserved ({len(existing_content)} bytes)", "SKIP")
     else:
         if not dry_run:
             target_cmd.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(kernel_cmd, target_cmd)
-        log("chat-listen.md created", "OK")
+        log("kernel-listen.md created", "OK")
 
 
 # ============================================================================
@@ -409,7 +409,7 @@ def write_report(target: Path, report: dict, dry_run: bool):
     print("  3. Create the ora_kernel database and run migrations:")
     print("       createdb ora_kernel")
     print("       for f in infrastructure/ora-kernel/db/*.sql; do psql -d ora_kernel -f $f; done")
-    print("  4. Run /chat-listen to start the Kernel event loop")
+    print("  4. Run /kernel-listen to start the Kernel event loop")
     print("  5. Push inotifywait to background when prompted, then use the TUI normally")
     print()
 
@@ -458,7 +458,7 @@ def main():
     merge_claude_md(target, dry_run)
     merge_settings_json(target, dry_run)
     merge_agents_yaml(target, dry_run)
-    handle_chat_listen(target, dry_run)
+    handle_kernel_listen(target, dry_run)
 
     # Phase 4
     copy_infrastructure(target, dry_run)

@@ -10,7 +10,7 @@
 - 10 node specs: NodeDesigner, NodeCreator, BusinessAnalyst (+ verifiers), TuningAnalyst, RefinementAnalyst (+ verifiers)
 - 3 schema files: node_output, node_spec, split_spec
 - 3 reference docs: constitution, kernel_priorities, node_quad_example
-- 2 commands: chat-listen (kernel event loop), self-improve (manual trigger)
+- 2 commands: kernel-listen (kernel event loop), self-improve (manual trigger)
 - PostgreSQL schema: 5 migration files (10 tables, 2 views)
 - OpenTelemetry pipeline: docker-compose + collector config
 - agents.yaml node/command registry
@@ -18,6 +18,6 @@
   - Clean install into new projects
   - Non-destructive merge into existing projects (CLAUDE.md, settings.json, agents.yaml)
   - Section markers for idempotent updates
-  - chat-listen collision handling
+  - kernel-listen collision handling
   - --dry-run and --force modes
 - INTEGRATION.md LLM-guided merge instructions

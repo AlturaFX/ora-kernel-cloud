@@ -5,16 +5,16 @@ services:
     image: postgres:16
     container_name: ora-kernel-postgres
     environment:
-      POSTGRES_DB: ora_kernel
-      POSTGRES_USER: ora
-      POSTGRES_PASSWORD: ora_kernel_dev
+      POSTGRES_DB: ${POSTGRES_DB:-ora_kernel}
+      POSTGRES_USER: ${POSTGRES_USER:-ora}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
     ports:
       - "5432:5432"
     volumes:
       - ora_pgdata:/var/lib/postgresql/data
       - ./db:/docker-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ora -d ora_kernel"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ora} -d ${POSTGRES_DB:-ora_kernel}"]
       interval: 5s
       timeout: 5s
       retries: 5

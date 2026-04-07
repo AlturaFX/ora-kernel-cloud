@@ -77,7 +77,7 @@ When a Domain Node returns `split_spec`, it MUST set `target_status` to `UNVERIF
 ```json
 "error": {
   "code": "INVALID_ARGUMENT",
-  "message": "Input field 'currency_pairs' was empty but is required for this analysis.",
+  "message": "Input field 'dataset_path' was empty but is required for this analysis.",
   "recoverable": true
 }
 ```
@@ -99,15 +99,15 @@ Error codes:
   "target_status": "UNVERIFIED",
   "artifacts": [
     {
-      "name": "forex_strategy_analysis",
+      "name": "research_analysis",
       "uri": "file:///tmp/workspace/research_output.md",
       "mime_type": "text/markdown"
     }
   ],
   "inline_data": {
-    "summary": "Identified 3 viable scalping strategies for EUR/USD with Sharpe ratios above 1.5",
-    "analyzed_pairs": ["EUR/USD", "GBP/USD"],
-    "strategy_count": 3
+    "summary": "Identified 3 optimization approaches with measurable improvement over the baseline",
+    "methods_evaluated": ["approach_a", "approach_b", "approach_c"],
+    "approach_count": 3
   }
 }
 ```
@@ -155,7 +155,7 @@ Error codes:
 {
   "target_status": "COMPLETE",
   "inline_data": {
-    "verification_notes": "All 3 strategies include required risk management sections. Sources verified. Sharpe ratio calculations checked.",
+    "verification_notes": "All 3 approaches include required methodology sections. Sources verified. Calculations checked against baseline.",
     "checks_passed": ["structure", "sources", "calculations", "completeness"]
   }
 }
@@ -167,14 +167,14 @@ Error codes:
   "target_status": "FAILED",
   "error": {
     "code": "FAILED_PRECONDITION",
-    "message": "Strategy 2 is missing a risk management section. Strategy 3 cites a source that does not exist.",
+    "message": "Approach 2 is missing a methodology section. Approach 3 cites a source that does not exist.",
     "recoverable": true
   },
   "inline_data": {
     "failed_checks": ["completeness", "source_verification"],
     "details": {
-      "strategy_2": "Missing 'Risk Management' section required by definition_of_done",
-      "strategy_3": "Citation 'Smith et al. 2024' not found in any indexed source"
+      "approach_2": "Missing 'Methodology' section required by definition_of_done",
+      "approach_3": "Citation 'Smith et al. 2024' not found in any indexed source"
     }
   }
 }
