@@ -21,8 +21,14 @@ if [ ! -f "$INBOX" ]; then
     exit 1
 fi
 
+# Verify journal directory exists
+if [ ! -d "$JOURNAL_DIR" ]; then
+    echo "WARNING: Journal directory not found at $JOURNAL_DIR" >&2
+    exit 0
+fi
+
 # Only trigger if there are recent journal entries to consolidate
-RECENT=$(find "$JOURNAL_DIR" -name "????-??-??.md" -mtime -7 2>/dev/null | wc -l)
+RECENT=$(find "$JOURNAL_DIR" -name "????-??-??.md" -mtime -7 | wc -l)
 if [ "$RECENT" -eq 0 ]; then
     exit 0  # Nothing to consolidate
 fi

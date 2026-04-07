@@ -8,6 +8,7 @@ Exit 0 = allow, Exit 2 = block (sends stderr to model).
 import json
 import sys
 import os
+from typing import Optional
 
 # Protected path patterns — these cannot be modified by any agent.
 # Node prompts in .claude/kernel/nodes/ are intentionally NOT protected
@@ -25,7 +26,7 @@ PROTECTED_PATHS = [
 ]
 
 
-def is_protected(file_path: str) -> str | None:
+def is_protected(file_path: str) -> Optional[str]:
     """Check if a file path matches any protected pattern. Returns the matching pattern or None."""
     # Normalize to relative path from project root
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
