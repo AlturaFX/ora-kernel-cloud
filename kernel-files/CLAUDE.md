@@ -34,7 +34,11 @@ These rules are enforced programmatically by hooks. Your behavior should align w
 
 ### Safety — safety_check.sh
 - Commands containing `rm` or `sudo` anywhere in the command string are blocked immediately
-- This includes chained commands (`&&`, `;`, `|`), subshells, and xargs patterns
+- Compound commands using `&&` or `;` are blocked — run one command per Bash call
+- This ensures every command is individually checked by permissions and safety hooks
+- If you need to run a sequence: use separate Bash calls, or write a script file and execute it
+- Use absolute paths instead of `cd somewhere && do something`
+- Pipes (`|`) are allowed — they are single logical operations
 - If you need to delete or elevate, ask the user
 
 ### File Protection — protect_core.py
