@@ -1,0 +1,35 @@
+# ORA Kernel Cloud — Orchestrator Configuration
+
+agent:
+  name: "ORA Kernel"
+  model: "claude-opus-4-6"
+
+environment:
+  name: "ora-kernel-env"
+  packages:
+    pip:
+      - psycopg2-binary
+    apt:
+      - postgresql-client
+  networking:
+    type: "limited"
+    allowed_hosts: []  # Add your postgres host here
+
+postgres:
+  # Override via POSTGRES_DSN env var or .env file
+  dsn: "postgresql://u24@localhost:5432/ora_kernel"
+
+scheduler:
+  heartbeat_interval_hours: 2
+  briefing_time: "08:00"
+  idle_work_hours: [20, 0, 4]  # 8pm, midnight, 4am
+  consolidation_day: "sunday"
+  consolidation_time: "03:00"
+
+dashboard:
+  websocket_port: 8002
+
+session:
+  bootstrap_repo: "https://github.com/AlturaFX/ora-kernel.git"
+  auto_restart: true
+  max_restart_attempts: 3
