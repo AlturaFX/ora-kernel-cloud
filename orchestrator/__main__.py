@@ -82,7 +82,7 @@ def main():
             logger.info(f"Resuming existing session: {session_mgr.session_id}")
 
     # Event consumer
-    consumer = EventConsumer(api_key, db)
+    consumer = EventConsumer(db=db, api_key=api_key, agent_id=agent_id, environment_id=env_id)
 
     # Scheduler
     scheduler = KernelScheduler(api_key, session_mgr.session_id, config)
@@ -125,7 +125,7 @@ def main():
                     scheduler.stop()
                     scheduler = KernelScheduler(api_key, session_mgr.session_id, config)
                     scheduler.start()
-                    consumer = EventConsumer(api_key, db)
+                    consumer = EventConsumer(db=db, api_key=api_key, agent_id=agent_id, environment_id=env_id)
                 else:
                     logger.critical("Could not restart session. Exiting.")
                     running = False

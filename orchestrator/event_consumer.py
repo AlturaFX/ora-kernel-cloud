@@ -10,7 +10,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, Optional
 
 from anthropic import Anthropic
 
@@ -19,7 +19,7 @@ from orchestrator.db import Database
 logger = logging.getLogger(__name__)
 
 # ── Cost rates (USD per million tokens) ──────────────────────────────
-COST_RATES: dict[str, dict[str, float]] = {
+COST_RATES: Dict[str, Dict[str, float]] = {
     "claude-opus-4-6": {"input": 5.0, "output": 25.0},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
 }
@@ -265,7 +265,7 @@ class EventConsumer:
         return False
 
     # Class-level handler dispatch table (avoids per-event if/elif chains)
-    _handlers: dict[str, Callable[..., Any]] = {
+    _handlers: Dict[str, Callable[..., Any]] = {
         "agent.message": _handle_message,
         "agent.tool_use": _handle_tool_use,
         "agent.tool_result": _handle_tool_result,

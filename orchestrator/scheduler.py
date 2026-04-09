@@ -29,7 +29,7 @@ _DEFAULTS = {
 class KernelScheduler:
     """Sends recurring triggers to a Managed Agent session via the Anthropic API."""
 
-    def __init__(self, api_key: str, session_id: str, config: dict | None = None):
+    def __init__(self, api_key: str, session_id: str, config: dict = None):
         self.api_key = api_key
         self.session_id = session_id
         self.client = Anthropic(api_key=api_key)
