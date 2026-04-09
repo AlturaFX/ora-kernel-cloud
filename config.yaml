@@ -12,8 +12,7 @@ environment:
     apt:
       - postgresql-client
   networking:
-    type: "limited"
-    allowed_hosts: []  # Add your postgres host here
+    type: "unrestricted"
 
 postgres:
   # Override via POSTGRES_DSN env var or .env file
