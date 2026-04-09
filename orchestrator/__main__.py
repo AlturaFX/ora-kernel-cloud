@@ -12,7 +12,7 @@ import sys
 
 from orchestrator.config import load_config, get_api_key, get_postgres_dsn
 from orchestrator.db import Database
-from orchestrator.agent_manager import AgentManager
+from orchestrator.agent_manager import setup as agent_setup
 from orchestrator.session_manager import SessionManager
 from orchestrator.event_consumer import EventConsumer
 from orchestrator.scheduler import KernelScheduler
@@ -43,8 +43,9 @@ def main():
     logger.info(f"Connected to PostgreSQL")
 
     # Setup agent + environment
-    agent_mgr = AgentManager(config)
-    agent_id, env_id = agent_mgr.setup()
+    result = agent_setup(config)
+    agent_id = result["agent_id"]
+    env_id = result["environment_id"]
     logger.info(f"Agent: {agent_id}")
     logger.info(f"Environment: {env_id}")
 

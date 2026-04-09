@@ -46,7 +46,7 @@ def _read_system_prompt() -> str:
     return KERNEL_SYSTEM_PROMPT_PATH.read_text()
 
 
-def _find_existing(items: Any, name: str) -> str | None:
+def _find_existing(items: Any, name: str) -> Optional[str]:
     """Search a paginated list response for an item matching `name`, return its ID or None."""
     for item in items:
         if getattr(item, "name", None) == name:
@@ -126,7 +126,7 @@ def ensure_environment(client: Anthropic, config: dict) -> str:
     return env.id
 
 
-def setup(config: dict | None = None) -> dict[str, str]:
+def setup(config: Optional[dict] = None) -> Dict[str, str]:
     """Ensure both the managed agent and environment exist. Returns their IDs."""
     if config is None:
         config = load_config()
