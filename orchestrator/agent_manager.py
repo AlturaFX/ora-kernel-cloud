@@ -109,12 +109,14 @@ def ensure_environment(client: Anthropic, config: dict) -> str:
         _save_state(state)
         return existing_id
 
-    # Build environment config from YAML
-    env_config: Dict[str, Any] = {}
+    # Build environment config from YAML — type: "cloud" is required by the API
+    env_config: Dict[str, Any] = {"type": "cloud"}
     if env_cfg.get("packages"):
         env_config["packages"] = env_cfg["packages"]
     if env_cfg.get("networking"):
         env_config["networking"] = env_cfg["networking"]
+    else:
+        env_config["networking"] = {"type": "unrestricted"}
 
     env = client.beta.environments.create(
         name=env_name,
