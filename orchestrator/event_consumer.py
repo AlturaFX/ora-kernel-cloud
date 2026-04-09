@@ -189,11 +189,12 @@ class EventConsumer:
         )
 
     def _handle_model_request_end(self, session_id: str, event: Any) -> None:
-        usage = getattr(event, "model_usage", {}) or {}
-        input_tokens = usage.get("input_tokens", 0)
-        output_tokens = usage.get("output_tokens", 0)
-        cache_read = usage.get("cache_read_input_tokens", 0)
-        cache_creation = usage.get("cache_creation_input_tokens", 0)
+        usage = getattr(event, "model_usage", None)
+        # model_usage is a Pydantic object — use getattr, not .get()
+        input_tokens = getattr(usage, "input_tokens", 0) or 0
+        output_tokens = getattr(usage, "output_tokens", 0) or 0
+        cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+        cache_creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
         model = getattr(event, "model", "claude-opus-4-6")
 
         cost = _cost_for_model(model, input_tokens, output_tokens)
@@ -229,6 +230,8 @@ class EventConsumer:
 
     def _handle_status_idle(self, session_id: str, event: Any) -> None:
         stop_reason = getattr(event, "stop_reason", None)
+        # stop_reason may be a Pydantic object — convert to string
+        stop_reason_str = self._serialize_pydantic(stop_reason)
         self.db.upsert_cloud_session(
             agent_id=self.agent_id,
             environment_id=self.environment_id,
@@ -241,8 +244,28 @@ class EventConsumer:
             level="INFO",
             event_source="sse",
             action="SESSION_IDLE",
-            details={"stop_reason": stop_reason},
+            details={"stop_reason": stop_reason_str},
         )
+
+    @staticmethod
+    def _serialize_pydantic(obj: Any) -> Any:
+        """Convert a Pydantic model to a JSON-serializable form, or return as-is."""
+        if obj is None:
+            return None
+        # Pydantic v2 model
+        if hasattr(obj, "model_dump"):
+            try:
+                return obj.model_dump()
+            except Exception:
+                pass
+        # Pydantic v1 fallback
+        if hasattr(obj, "dict"):
+            try:
+                return obj.dict()
+            except Exception:
+                pass
+        # Last resort: string representation
+        return str(obj)
 
     def _handle_status_terminated(self, session_id: str, event: Any) -> bool:
         error = getattr(event, "error", None)
