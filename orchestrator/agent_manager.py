@@ -3,7 +3,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, Optional
 
 from anthropic import Anthropic
 
@@ -12,7 +12,7 @@ from orchestrator.config import load_config, get_api_key
 logger = logging.getLogger(__name__)
 
 STATE_FILE = Path(".ora-kernel-cloud.json")
-KERNEL_SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "ora-kernel" / "kernel-files" / "CLAUDE.md"
+KERNEL_SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent.parent / "kernel-files" / "CLAUDE.md"
 
 DEFAULT_MODEL = "claude-opus-4-6"
 DEFAULT_AGENT_NAME = "ORA Kernel"
@@ -110,7 +110,7 @@ def ensure_environment(client: Anthropic, config: dict) -> str:
         return existing_id
 
     # Build environment config from YAML
-    env_config: dict[str, Any] = {}
+    env_config: Dict[str, Any] = {}
     if env_cfg.get("packages"):
         env_config["packages"] = env_cfg["packages"]
     if env_cfg.get("networking"):
