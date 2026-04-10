@@ -99,3 +99,54 @@ def test_parse_sync_fences_ignores_non_sync_fences():
 
 def test_parse_sync_fences_empty_on_no_matches():
     assert parse_sync_fences("just prose, no fences") == []
+
+
+# ── FileSync.handle_write ───────────────────────────────────────────
+
+def _make_db():
+    db = MagicMock()
+    db.sync_file = MagicMock()
+    db.get_synced_file = MagicMock(return_value=None)
+    db.log_activity = MagicMock()
+    return db
+
+
+def test_handle_write_syncs_tracked_path():
+    db = _make_db()
+    fs = FileSync(db)
+
+    fs.handle_write("/work/.claude/kernel/journal/WISDOM.md", "# Wisdom\nA")
+
+    db.sync_file.assert_called_once_with(
+        ".claude/kernel/journal/WISDOM.md",
+        "# Wisdom\nA",
+        synced_from="cdc",
+    )
+
+
+def test_handle_write_skips_untracked_path():
+    db = _make_db()
+    fs = FileSync(db)
+
+    fs.handle_write("/work/CLAUDE.md", "ignored")
+    fs.handle_write("/work/.claude/events/inbox.jsonl", "ignored")
+
+    db.sync_file.assert_not_called()
+
+
+def test_handle_write_skips_empty_path():
+    db = _make_db()
+    fs = FileSync(db)
+    fs.handle_write("", "content")
+    db.sync_file.assert_not_called()
+
+
+def test_handle_write_accepts_empty_content():
+    db = _make_db()
+    fs = FileSync(db)
+
+    fs.handle_write("/work/.claude/kernel/journal/WISDOM.md", "")
+
+    db.sync_file.assert_called_once_with(
+        ".claude/kernel/journal/WISDOM.md", "", synced_from="cdc"
+    )

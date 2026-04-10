@@ -76,3 +76,16 @@ class FileSync:
 
     def __init__(self, db):
         self.db = db
+
+    def handle_write(self, file_path: str, content: str) -> bool:
+        """Mirror a Write tool call to kernel_files_sync.
+
+        Returns True if the file was synced, False if it was filtered
+        out (untracked path or empty path).
+        """
+        normalized = normalize_path(file_path)
+        if not normalized or not is_tracked(normalized):
+            return False
+        self.db.sync_file(normalized, content or "", synced_from="cdc")
+        logger.debug("cdc write synced: %s (%d bytes)", normalized, len(content or ""))
+        return True
