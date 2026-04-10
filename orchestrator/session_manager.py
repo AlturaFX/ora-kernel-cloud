@@ -18,15 +18,47 @@ logger = logging.getLogger(__name__)
 
 BOOTSTRAP_PROMPT = """Bootstrap: Set up the ORA Kernel workspace.
 
-1. Clone the ORA Kernel repo: git clone {repo_url} /work/ora-kernel
-2. Run the installer: python3 /work/ora-kernel/install.py /work --force
-3. Read CLAUDE.md to confirm your operating instructions are loaded
-4. Read .claude/kernel/journal/WISDOM.md for operational context
-5. Check postgres connectivity: psql "{postgres_dsn}" -c "SELECT COUNT(*) FROM orch_config"
-6. Report ready status with a summary of:
-   - Number of node specs available
-   - WISDOM.md entries loaded
-   - Postgres connection status
+IMPORTANT: You are running inside a cloud container. You do NOT have
+direct network access to the user's local PostgreSQL database. All
+postgres writes are handled by the orchestrator on the user's machine
+which consumes the event stream. You do not need to connect to postgres.
+
+Steps:
+
+1. Change to /work directory:
+   cd /work
+
+2. Clone the ORA Kernel repo (explicit command — do not skip):
+   git clone {repo_url} /work/ora-kernel
+
+3. Verify the clone worked — check for key files:
+   ls /work/ora-kernel/kernel-files/CLAUDE.md
+   ls /work/ora-kernel/kernel-files/.claude/kernel/
+
+4. Copy the kernel files into /work so they're at the expected paths:
+   cp /work/ora-kernel/kernel-files/CLAUDE.md /work/CLAUDE.md
+   cp -r /work/ora-kernel/kernel-files/.claude /work/.claude
+   cp /work/ora-kernel/kernel-files/PROJECT_DNA.md /work/PROJECT_DNA.md
+
+5. Verify the workspace is set up:
+   ls /work/.claude/kernel/nodes/system/
+   ls /work/.claude/kernel/journal/
+
+6. Read your operating instructions:
+   cat /work/CLAUDE.md
+
+7. Report ready status with a brief summary:
+   - Number of node spec files found in .claude/kernel/nodes/
+   - Whether WISDOM.md exists (it may be empty on first boot)
+   - Confirmation that you have loaded the Constitution and axioms
+
+After bootstrap, you will receive periodic triggers (/heartbeat, /briefing,
+/idle-work, /consolidate) from the user's scheduler. Respond to them per
+your operating instructions in CLAUDE.md.
+
+DO NOT attempt to contact a PostgreSQL database — that is handled by the
+orchestrator outside the container via the event stream. Your job is to
+reason and act; the orchestrator records everything.
 
 {hydration_instructions}
 """
@@ -108,13 +140,9 @@ class SessionManager:
         repo_url = self.config.get("session", {}).get(
             "bootstrap_repo", "https://github.com/AlturaFX/ora-kernel.git"
         )
-        postgres_dsn = self.config.get("postgres", {}).get(
-            "dsn", "postgresql://u24@localhost:5432/ora_kernel"
-        )
 
         prompt = BOOTSTRAP_PROMPT.format(
             repo_url=repo_url,
-            postgres_dsn=postgres_dsn,
             hydration_instructions=hydration,
         )
 
