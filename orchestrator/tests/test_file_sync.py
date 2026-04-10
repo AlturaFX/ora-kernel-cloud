@@ -239,3 +239,43 @@ def test_handle_edit_logs_missing_when_no_prior_content():
     assert db.log_activity.called
     call = db.log_activity.call_args
     assert call.kwargs.get("action") == "CDC_MISSING_BASE"
+
+
+# ── FileSync.handle_snapshot_response ───────────────────────────────
+
+def test_snapshot_syncs_tracked_fences():
+    db = _make_db()
+    fs = FileSync(db)
+    text = (
+        "Snapshot follows.\n"
+        "```SYNC path=.claude/kernel/journal/WISDOM.md\nfresh wisdom\n```\n"
+        "```SYNC path=.claude/kernel/journal/2026-04-10.md\ntoday\n```\n"
+    )
+
+    count = fs.handle_snapshot_response(text)
+
+    assert count == 2
+    db.sync_file.assert_any_call(
+        ".claude/kernel/journal/WISDOM.md", "fresh wisdom", synced_from="snapshot"
+    )
+    db.sync_file.assert_any_call(
+        ".claude/kernel/journal/2026-04-10.md", "today", synced_from="snapshot"
+    )
+
+
+def test_snapshot_ignores_untracked_fence_paths():
+    db = _make_db()
+    fs = FileSync(db)
+    text = "```SYNC path=CLAUDE.md\nshould not sync\n```"
+
+    count = fs.handle_snapshot_response(text)
+
+    assert count == 0
+    db.sync_file.assert_not_called()
+
+
+def test_snapshot_no_fences_returns_zero():
+    db = _make_db()
+    fs = FileSync(db)
+    assert fs.handle_snapshot_response("just normal prose") == 0
+    db.sync_file.assert_not_called()

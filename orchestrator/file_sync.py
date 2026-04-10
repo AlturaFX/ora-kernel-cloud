@@ -138,3 +138,22 @@ class FileSync:
         self.db.sync_file(normalized, updated, synced_from="cdc")
         logger.debug("cdc edit applied: %s", normalized)
         return True
+
+    def handle_snapshot_response(self, message_text: str) -> int:
+        """Parse ```SYNC``` fences in an agent message and sync tracked ones.
+
+        Returns the number of files written to kernel_files_sync.
+        """
+        if not message_text:
+            return 0
+        synced = 0
+        for raw_path, content in parse_sync_fences(message_text):
+            normalized = normalize_path(raw_path)
+            if not is_tracked(normalized):
+                logger.debug("snapshot fence ignored (untracked): %s", raw_path)
+                continue
+            self.db.sync_file(normalized, content, synced_from="snapshot")
+            synced += 1
+        if synced:
+            logger.info("snapshot sync: %d file(s) mirrored", synced)
+        return synced
