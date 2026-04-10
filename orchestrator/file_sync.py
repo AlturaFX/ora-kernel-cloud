@@ -89,3 +89,52 @@ class FileSync:
         self.db.sync_file(normalized, content or "", synced_from="cdc")
         logger.debug("cdc write synced: %s (%d bytes)", normalized, len(content or ""))
         return True
+
+    def handle_edit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+    ) -> bool:
+        """Apply an Edit tool diff against cached content and resync.
+
+        Returns True on successful apply, False if filtered, missing,
+        or divergent. Divergences are logged to orch_activity_log so
+        they are observable (Axiom 1).
+        """
+        normalized = normalize_path(file_path)
+        if not normalized or not is_tracked(normalized):
+            return False
+
+        cached = self.db.get_synced_file(normalized)
+        if cached is None:
+            logger.warning("cdc edit has no cached base: %s", normalized)
+            self.db.log_activity(
+                session_id=None,
+                agent_id=None,
+                level="WARNING",
+                event_source="file_sync",
+                action="CDC_MISSING_BASE",
+                details={"file_path": normalized},
+            )
+            return False
+
+        if old_string not in cached:
+            logger.error("cdc edit divergence on %s: old_string absent", normalized)
+            self.db.log_activity(
+                session_id=None,
+                agent_id=None,
+                level="WARNING",
+                event_source="file_sync",
+                action="CDC_DIVERGENCE",
+                details={
+                    "file_path": normalized,
+                    "reason": "old_string not in cached content",
+                },
+            )
+            return False
+
+        updated = cached.replace(old_string, new_string, 1)
+        self.db.sync_file(normalized, updated, synced_from="cdc")
+        logger.debug("cdc edit applied: %s", normalized)
+        return True

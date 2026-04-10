@@ -150,3 +150,92 @@ def test_handle_write_accepts_empty_content():
     db.sync_file.assert_called_once_with(
         ".claude/kernel/journal/WISDOM.md", "", synced_from="cdc"
     )
+
+
+# ── FileSync.handle_edit ────────────────────────────────────────────
+
+def test_handle_edit_applies_diff_against_cached_content():
+    db = _make_db()
+    db.get_synced_file.return_value = "hello world\nline two"
+    fs = FileSync(db)
+
+    result = fs.handle_edit(
+        "/work/.claude/kernel/journal/WISDOM.md",
+        old_string="hello world",
+        new_string="HELLO WORLD",
+    )
+
+    assert result is True
+    db.get_synced_file.assert_called_once_with(".claude/kernel/journal/WISDOM.md")
+    db.sync_file.assert_called_once_with(
+        ".claude/kernel/journal/WISDOM.md",
+        "HELLO WORLD\nline two",
+        synced_from="cdc",
+    )
+
+
+def test_handle_edit_replaces_only_first_occurrence():
+    db = _make_db()
+    db.get_synced_file.return_value = "foo bar foo"
+    fs = FileSync(db)
+
+    fs.handle_edit(
+        "/work/.claude/kernel/nodes/system/planner.md",
+        old_string="foo",
+        new_string="baz",
+    )
+
+    db.sync_file.assert_called_once_with(
+        ".claude/kernel/nodes/system/planner.md",
+        "baz bar foo",
+        synced_from="cdc",
+    )
+
+
+def test_handle_edit_skips_untracked_path():
+    db = _make_db()
+    fs = FileSync(db)
+
+    result = fs.handle_edit("/work/CLAUDE.md", "a", "b")
+
+    assert result is False
+    db.get_synced_file.assert_not_called()
+    db.sync_file.assert_not_called()
+
+
+def test_handle_edit_logs_divergence_when_old_string_absent():
+    db = _make_db()
+    db.get_synced_file.return_value = "cached body without marker"
+    fs = FileSync(db)
+
+    result = fs.handle_edit(
+        "/work/.claude/kernel/journal/WISDOM.md",
+        old_string="missing marker",
+        new_string="replacement",
+    )
+
+    assert result is False
+    db.sync_file.assert_not_called()
+    # Divergence should be reported via log_activity
+    assert db.log_activity.called
+    call = db.log_activity.call_args
+    assert call.kwargs.get("action") == "CDC_DIVERGENCE"
+    assert call.kwargs.get("level") == "WARNING"
+
+
+def test_handle_edit_logs_missing_when_no_prior_content():
+    db = _make_db()
+    db.get_synced_file.return_value = None
+    fs = FileSync(db)
+
+    result = fs.handle_edit(
+        "/work/.claude/kernel/journal/2026-04-10.md",
+        old_string="x",
+        new_string="y",
+    )
+
+    assert result is False
+    db.sync_file.assert_not_called()
+    assert db.log_activity.called
+    call = db.log_activity.call_args
+    assert call.kwargs.get("action") == "CDC_MISSING_BASE"
