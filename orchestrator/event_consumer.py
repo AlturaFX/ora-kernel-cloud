@@ -25,8 +25,8 @@ COST_RATES: Dict[str, Dict[str, float]] = {
 }
 DEFAULT_RATES = COST_RATES["claude-opus-4-6"]
 
-TEXT_PREVIEW_LEN = 200
-INPUT_PREVIEW_LEN = 500
+TEXT_PREVIEW_LEN = 10_000
+INPUT_PREVIEW_LEN = 2_000
 
 
 def _truncate(text: str, limit: int) -> str:
