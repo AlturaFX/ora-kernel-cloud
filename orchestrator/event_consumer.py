@@ -10,11 +10,14 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 
 from anthropic import Anthropic
 
 from orchestrator.db import Database
+
+if TYPE_CHECKING:
+    from orchestrator.file_sync import FileSync
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +83,7 @@ class EventConsumer:
         environment_id: str,
         on_event: Optional[Callable[[Any], None]] = None,
         on_hitl_needed: Optional[Callable[[Any], None]] = None,
+        file_sync: Optional["FileSync"] = None,
     ):
         self.db = db
         self.client = Anthropic(api_key=api_key)
@@ -87,6 +91,7 @@ class EventConsumer:
         self.environment_id = environment_id
         self.on_event = on_event
         self.on_hitl_needed = on_hitl_needed
+        self.file_sync = file_sync
         self.totals = SessionTotals()
 
     # ── Public API ────────────────────────────────────────────────────
@@ -149,7 +154,8 @@ class EventConsumer:
         for block in getattr(event, "content", []):
             if hasattr(block, "text"):
                 text_parts.append(block.text)
-        preview = _truncate(" ".join(text_parts), TEXT_PREVIEW_LEN) if text_parts else ""
+        full_text = " ".join(text_parts)
+        preview = _truncate(full_text, TEXT_PREVIEW_LEN) if full_text else ""
         self.db.log_activity(
             session_id=session_id,
             agent_id=self.agent_id,
@@ -158,6 +164,11 @@ class EventConsumer:
             action="MESSAGE",
             details={"text": preview},
         )
+        if self.file_sync is not None and full_text:
+            try:
+                self.file_sync.handle_snapshot_response(full_text)
+            except Exception:
+                logger.exception("file_sync snapshot handler failed")
 
     def _handle_tool_use(self, session_id: str, event: Any) -> None:
         tool_name = getattr(event, "name", "unknown")
@@ -174,6 +185,26 @@ class EventConsumer:
             action="TOOL_USE",
             details={"tool_name": tool_name, "input": input_preview},
         )
+
+        # CDC file sync from tool_use events
+        if self.file_sync is not None and isinstance(raw_input, dict):
+            if tool_name == "Write":
+                try:
+                    self.file_sync.handle_write(
+                        raw_input.get("file_path", ""),
+                        raw_input.get("content", ""),
+                    )
+                except Exception:
+                    logger.exception("file_sync.handle_write failed")
+            elif tool_name == "Edit":
+                try:
+                    self.file_sync.handle_edit(
+                        raw_input.get("file_path", ""),
+                        raw_input.get("old_string", ""),
+                        raw_input.get("new_string", ""),
+                    )
+                except Exception:
+                    logger.exception("file_sync.handle_edit failed")
 
         # Detect HITL confirmation requests
         if tool_name == "tool_confirmation" and self.on_hitl_needed is not None:
