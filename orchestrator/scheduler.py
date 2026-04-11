@@ -13,6 +13,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from orchestrator.config import load_config, get_api_key
+from orchestrator.session_manager import SYNC_SNAPSHOT_PROTOCOL
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,17 @@ _DEFAULTS = {
     "consolidation_time": "03:00",
     "sync_snapshot_interval_hours": 6,
 }
+
+# Full trigger message for the /sync-snapshot cron job. We send the
+# protocol inline on every firing so resumed sessions (bootstrapped
+# before the protocol existed) still comply — bootstrap is sent once
+# at session creation and we cannot rely on it being present.
+SYNC_SNAPSHOT_TRIGGER = (
+    "/sync-snapshot\n\n"
+    "Respond to this trigger per the protocol below. Do not include any\n"
+    "prose outside the fenced blocks.\n\n"
+    f"{SYNC_SNAPSHOT_PROTOCOL}"
+)
 
 
 class KernelScheduler:
@@ -177,11 +189,16 @@ class KernelScheduler:
         )
 
     def _add_sync_snapshot_job(self) -> None:
-        """Every N hours, ask the Kernel to emit a SYNC reconciliation snapshot."""
+        """Every N hours, ask the Kernel to emit a SYNC reconciliation snapshot.
+
+        The trigger payload carries the full SYNC protocol inline so this
+        works on resumed sessions that were bootstrapped before the
+        protocol existed.
+        """
         self._scheduler.add_job(
             func=self.send_trigger,
             trigger=IntervalTrigger(hours=self.sync_snapshot_interval),
-            args=["/sync-snapshot"],
+            args=[SYNC_SNAPSHOT_TRIGGER],
             id="sync-snapshot",
             name="sync-snapshot",
         )

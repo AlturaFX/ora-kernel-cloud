@@ -16,6 +16,37 @@ from orchestrator.db import Database
 
 logger = logging.getLogger(__name__)
 
+# Protocol block defining how the Kernel must respond to /sync-snapshot.
+# Kept as a module constant so it can be embedded in BOOTSTRAP_PROMPT (for
+# fresh sessions) AND in the scheduler's /sync-snapshot trigger (for
+# resumed sessions whose bootstrap ran before the protocol existed).
+# The format is pinned by orchestrator.file_sync.parse_sync_fences — any
+# change here must update parse_sync_fences and its tests in lockstep.
+SYNC_SNAPSHOT_PROTOCOL = """=== /sync-snapshot protocol ===
+
+When you receive /sync-snapshot, the orchestrator is asking you to emit a
+reconciliation snapshot of your operational-memory files so their contents
+are persisted to postgres outside the ephemeral container. This is how
+WISDOM.md and journal entries survive container restarts.
+
+Your response MUST contain fenced blocks in this exact form:
+
+```SYNC path=<relative path from /work>
+<full current file contents>
+```
+
+Emit one fenced block per file. Include these files if they exist:
+- .claude/kernel/journal/WISDOM.md
+- Today's journal entry (.claude/kernel/journal/YYYY-MM-DD.md)
+
+If a file does not exist, omit its block — do not emit empty blocks.
+Do not emit ```SYNC blocks for any other files. Do not modify file content
+during the snapshot — read and echo it verbatim. No explanatory prose is
+required outside the fences; the orchestrator only parses the fenced blocks.
+
+=== end /sync-snapshot protocol ==="""
+
+
 BOOTSTRAP_PROMPT = """Bootstrap: Set up the ORA Kernel workspace.
 
 IMPORTANT: You are running inside a cloud container. You do NOT have
@@ -56,29 +87,7 @@ After bootstrap, you will receive periodic triggers (/heartbeat, /briefing,
 /idle-work, /consolidate, /sync-snapshot) from the user's scheduler.
 Respond to them per your operating instructions in CLAUDE.md.
 
-=== /sync-snapshot protocol ===
-
-When you receive /sync-snapshot, the orchestrator is asking you to emit a
-reconciliation snapshot of your operational-memory files so their contents
-are persisted to postgres outside the ephemeral container. This is how
-WISDOM.md and journal entries survive container restarts.
-
-Your response MUST contain fenced blocks in this exact form:
-
-```SYNC path=<relative path from /work>
-<full current file contents>
-```
-
-Emit one fenced block per file. Include these files if they exist:
-- .claude/kernel/journal/WISDOM.md
-- Today's journal entry (.claude/kernel/journal/YYYY-MM-DD.md)
-
-If a file does not exist, omit its block — do not emit empty blocks.
-Do not emit ```SYNC blocks for any other files. Do not modify file content
-during the snapshot — read and echo it verbatim. No explanatory prose is
-required; the orchestrator only parses the fenced blocks.
-
-=== end /sync-snapshot protocol ===
+{sync_snapshot_protocol}
 
 DO NOT attempt to contact a PostgreSQL database — that is handled by the
 orchestrator outside the container via the event stream. Your job is to
@@ -167,6 +176,7 @@ class SessionManager:
 
         prompt = BOOTSTRAP_PROMPT.format(
             repo_url=repo_url,
+            sync_snapshot_protocol=SYNC_SNAPSHOT_PROTOCOL,
             hydration_instructions=hydration,
         )
 
