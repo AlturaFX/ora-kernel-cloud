@@ -22,6 +22,10 @@ from orchestrator.dispatch import DispatchManager
 from orchestrator.file_sync import FileSync
 from orchestrator.hitl import StdinHitlHandler
 from orchestrator.scheduler import KernelScheduler
+from orchestrator.http_api import PanelApiServer
+from orchestrator.ws_bridge import WebSocketBridge
+from orchestrator.ws_hitl import WebSocketHitlHandler
+from orchestrator import ws_events  # noqa: F401 — used by snapshot provider (W9)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -93,8 +97,55 @@ def main():
     # File sync (change-data-capture + snapshot reconciliation)
     file_sync = FileSync(db)
 
-    # HITL handler — stdin prompt, hot-swappable for dashboard later
-    hitl = StdinHitlHandler(send_response=session_mgr.send_tool_confirmation)
+    # Dashboard bridge (WebSocket) and HTTP API — optional, controlled by config
+    dashboard_cfg = config.get("dashboard", {}) or {}
+    dashboard_enabled = dashboard_cfg.get("enabled", True)
+    ws_bridge = None
+    panel_api = None
+    if dashboard_enabled:
+        ws_bridge = WebSocketBridge(
+            host="127.0.0.1",
+            port=dashboard_cfg.get("websocket_port", 8002),
+        )
+        try:
+            ws_bridge.start()
+            logger.info("Dashboard WS bridge: ws://127.0.0.1:%d", ws_bridge.port)
+        except Exception:
+            logger.exception("ws_bridge failed to start — falling back to stdin HITL")
+            ws_bridge = None
+
+        if ws_bridge is not None:
+            panel_api = PanelApiServer(
+                db=db,
+                host="127.0.0.1",
+                port=dashboard_cfg.get("http_api_port", 8003),
+            )
+            try:
+                panel_api.start()
+                logger.info("Dashboard HTTP API: http://127.0.0.1:%d", panel_api.port)
+            except Exception:
+                logger.exception("panel_api failed to start")
+                panel_api = None
+
+    # HITL handler — WebSocket if bridge is live, stdin as fallback
+    if ws_bridge is not None:
+        hitl = WebSocketHitlHandler(
+            ws_bridge=ws_bridge,
+            send_response=session_mgr.send_tool_confirmation,
+        )
+        logger.info("HITL: using WebSocket handler")
+    else:
+        hitl = StdinHitlHandler(
+            send_response=session_mgr.send_tool_confirmation
+        )
+        logger.info("HITL: using stdin handler")
+
+    # Wire bridge inbound callbacks to orchestrator actions
+    if ws_bridge is not None:
+        ws_bridge.on_user_message = lambda payload: session_mgr.send_message(
+            payload.get("text", "")
+        )
+        ws_bridge.on_abort = lambda: session_mgr.interrupt()
 
     # Dispatch manager — translates DISPATCH fences into sub-sessions
     node_spec_dir = (
@@ -111,6 +162,7 @@ def main():
         environment_id=env_id,
         send_to_parent=lambda _sid, text: session_mgr.send_message(text),
         node_spec_dir=node_spec_dir,
+        ws_bridge=ws_bridge,
     )
 
     # Event consumer
@@ -122,6 +174,7 @@ def main():
         on_hitl_needed=hitl.handle,
         file_sync=file_sync,
         dispatch_manager=dispatch_manager,
+        ws_bridge=ws_bridge,
     )
 
     # Scheduler
@@ -173,6 +226,7 @@ def main():
                         on_hitl_needed=hitl.handle,
                         file_sync=file_sync,
                         dispatch_manager=dispatch_manager,
+                        ws_bridge=ws_bridge,
                     )
                 else:
                     logger.critical("Could not restart session. Exiting.")
@@ -188,6 +242,10 @@ def main():
 
     # Cleanup
     scheduler.stop()
+    if panel_api is not None:
+        panel_api.stop()
+    if ws_bridge is not None:
+        ws_bridge.stop()
     db.close()
     logger.info("Orchestrator stopped.")
 
