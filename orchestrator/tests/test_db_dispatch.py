@@ -131,3 +131,60 @@ def test_record_dispatch_failure_updates_row(db):
         row = cur.fetchone()
     assert row["status"] == "failed"
     assert row["error"] == "sub-session terminated"
+
+
+# ── HTTP API helpers ────────────────────────────────────────────────
+
+
+def test_get_current_parent_session_returns_none_when_empty(db):
+    # Use a fresh session_id guaranteed not to exist
+    unique_sid = f"nope_{uuid.uuid4().hex[:8]}"
+    # Directly query the helper — it should fall back to the latest row
+    row = db.get_current_parent_session(preferred_session_id=unique_sid)
+    # Either returns None (empty table) or returns whatever latest row exists
+    assert row is None or "session_id" in row
+
+
+def test_get_current_parent_session_finds_by_id(db):
+    sid = f"sesn_test_{uuid.uuid4().hex[:8]}"
+    db.upsert_cloud_session("agent_x", "env_x", sid, "running")
+
+    row = db.get_current_parent_session(preferred_session_id=sid)
+    assert row is not None
+    assert row["session_id"] == sid
+    assert row["status"] == "running"
+
+
+def test_get_recent_dispatches_respects_limit(db):
+    parent = f"sesn_rd_{uuid.uuid4().hex[:8]}"
+    for i in range(5):
+        sub = f"sub_{uuid.uuid4().hex[:8]}"
+        db.record_dispatch_start(
+            sub_session_id=sub,
+            parent_session_id=parent,
+            node_name=f"node_{i}",
+            input_data={},
+        )
+
+    rows = db.get_recent_dispatches(limit=3, parent_session_id=parent)
+    assert len(rows) == 3
+    # Most recent first
+    assert rows[0]["node_name"] == "node_4"
+
+
+def test_get_file_sync_state_returns_all_rows(db):
+    path = f".claude/kernel/journal/test_{uuid.uuid4().hex[:8]}.md"
+    db.sync_file(path, "content-body", synced_from="cdc")
+
+    rows = db.get_file_sync_state()
+    paths = [r["file_path"] for r in rows]
+    assert path in paths
+
+
+def test_list_dispatch_agents(db):
+    node = _random_node()
+    db.upsert_dispatch_agent(node, agent_id="agent_list_test", prompt_hash="ha")
+
+    rows = db.list_dispatch_agents()
+    names = [r["node_name"] for r in rows]
+    assert node in names

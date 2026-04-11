@@ -188,3 +188,100 @@ class Database:
                 """,
                 (error, sub_session_id),
             )
+
+    # ── HTTP API read-only helpers ────────────────────────────────────
+
+    def get_current_parent_session(
+        self, preferred_session_id: Optional[str] = None
+    ) -> Optional[dict]:
+        """Return the current parent cloud_sessions row.
+
+        If ``preferred_session_id`` is given, look it up directly.
+        Otherwise return the most recently updated row (by last_event_at
+        fallback to created_at).
+        """
+        with self.cursor() as cur:
+            if preferred_session_id is not None:
+                cur.execute(
+                    """
+                    SELECT agent_id, environment_id, session_id, status,
+                           total_input_tokens, total_output_tokens, total_cost_usd,
+                           created_at, last_event_at
+                    FROM cloud_sessions
+                    WHERE session_id = %s
+                    """,
+                    (preferred_session_id,),
+                )
+                row = cur.fetchone()
+                if row is not None:
+                    return row
+            cur.execute(
+                """
+                SELECT agent_id, environment_id, session_id, status,
+                       total_input_tokens, total_output_tokens, total_cost_usd,
+                       created_at, last_event_at
+                FROM cloud_sessions
+                ORDER BY COALESCE(last_event_at, created_at) DESC
+                LIMIT 1
+                """
+            )
+            return cur.fetchone()
+
+    def get_recent_dispatches(
+        self,
+        limit: int = 50,
+        parent_session_id: Optional[str] = None,
+    ) -> list:
+        """Return the N most recent dispatch_sessions rows."""
+        with self.cursor() as cur:
+            if parent_session_id is not None:
+                cur.execute(
+                    """
+                    SELECT sub_session_id, parent_session_id, node_name, status,
+                           input_tokens, output_tokens, cost_usd, duration_ms,
+                           error, started_at, completed_at
+                    FROM dispatch_sessions
+                    WHERE parent_session_id = %s
+                    ORDER BY started_at DESC
+                    LIMIT %s
+                    """,
+                    (parent_session_id, limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT sub_session_id, parent_session_id, node_name, status,
+                           input_tokens, output_tokens, cost_usd, duration_ms,
+                           error, started_at, completed_at
+                    FROM dispatch_sessions
+                    ORDER BY started_at DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+            return cur.fetchall()
+
+    def get_file_sync_state(self) -> list:
+        """Return all kernel_files_sync rows with lengths rather than content."""
+        with self.cursor() as cur:
+            cur.execute(
+                """
+                SELECT file_path, synced_from, length(content) AS content_length,
+                       updated_at
+                FROM kernel_files_sync
+                ORDER BY updated_at DESC
+                """
+            )
+            return cur.fetchall()
+
+    def list_dispatch_agents(self) -> list:
+        """Return all dispatch_agents rows."""
+        with self.cursor() as cur:
+            cur.execute(
+                """
+                SELECT node_name, agent_id, prompt_hash, created_at
+                FROM dispatch_agents
+                ORDER BY created_at DESC
+                """
+            )
+            return cur.fetchall()
