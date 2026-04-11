@@ -162,3 +162,128 @@ class DispatchManager:
             prompt_hash=current_hash,
         )
         return agent.id
+
+    # ── Sub-session lifecycle ───────────────────────────────────────
+
+    # Opus pricing — must stay in sync with event_consumer.COST_RATES.
+    _INPUT_USD_PER_M = 5.0
+    _OUTPUT_USD_PER_M = 25.0
+
+    @classmethod
+    def _cost_usd(cls, input_tokens: int, output_tokens: int) -> float:
+        return (
+            input_tokens * cls._INPUT_USD_PER_M
+            + output_tokens * cls._OUTPUT_USD_PER_M
+        ) / 1_000_000.0
+
+    def _run_sub_session(
+        self,
+        parent_session_id: str,
+        agent_id: str,
+        node_name: str,
+        input_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Create a sub-session, send the task, consume events, return a result.
+
+        Never raises for protocol-level failures — sub-session termination,
+        timeouts, and explicit error events are captured in the returned
+        result dict with ``status='failed'`` and an ``error`` field. The
+        caller is responsible for forwarding the result to the parent
+        session as a DISPATCH_RESULT fence.
+        """
+        session = self.client.beta.sessions.create(
+            agent=agent_id,
+            environment_id=self.environment_id,
+            title=f"ora-dispatch-{node_name}",
+        )
+        sub_session_id = session.id
+
+        self.db.record_dispatch_start(
+            sub_session_id=sub_session_id,
+            parent_session_id=parent_session_id,
+            node_name=node_name,
+            input_data=input_data,
+        )
+
+        prompt_text = json.dumps(input_data, indent=2, default=str)
+        self.client.beta.sessions.events.send(
+            sub_session_id,
+            events=[
+                {
+                    "type": "user.message",
+                    "content": [{"type": "text", "text": prompt_text}],
+                }
+            ],
+        )
+
+        input_tokens = 0
+        output_tokens = 0
+        response_text = ""
+        t_start = time.time()
+        terminated_error: Optional[str] = None
+
+        with self.client.beta.sessions.events.stream(sub_session_id) as stream:
+            for event in stream:
+                if time.time() - t_start > self.max_dispatch_seconds:
+                    terminated_error = (
+                        f"dispatch exceeded max_dispatch_seconds="
+                        f"{self.max_dispatch_seconds}"
+                    )
+                    break
+
+                event_type = getattr(event, "type", "")
+
+                if event_type == "span.model_request_end":
+                    usage = getattr(event, "model_usage", None)
+                    input_tokens += getattr(usage, "input_tokens", 0) or 0
+                    output_tokens += getattr(usage, "output_tokens", 0) or 0
+
+                elif event_type == "agent.message":
+                    for block in getattr(event, "content", []) or []:
+                        text = getattr(block, "text", None)
+                        if text:
+                            response_text += text
+
+                elif event_type == "session.status_idle":
+                    break
+
+                elif event_type == "session.status_terminated":
+                    err = getattr(event, "error", None)
+                    terminated_error = str(err) if err else "sub-session terminated"
+                    break
+
+        duration_ms = int((time.time() - t_start) * 1000)
+        cost_usd = self._cost_usd(input_tokens, output_tokens)
+
+        if terminated_error is not None:
+            self.db.record_dispatch_failure(
+                sub_session_id=sub_session_id, error=terminated_error
+            )
+            return {
+                "status": "failed",
+                "sub_session_id": sub_session_id,
+                "node_name": node_name,
+                "error": terminated_error,
+                "output": response_text,
+                "tokens": {"input": input_tokens, "output": output_tokens},
+                "cost_usd": cost_usd,
+                "duration_ms": duration_ms,
+            }
+
+        self.db.record_dispatch_complete(
+            sub_session_id=sub_session_id,
+            output_data={"text": response_text},
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost_usd,
+            duration_ms=duration_ms,
+        )
+        return {
+            "status": "complete",
+            "sub_session_id": sub_session_id,
+            "node_name": node_name,
+            "output": response_text,
+            "tokens": {"input": input_tokens, "output": output_tokens},
+            "cost_usd": cost_usd,
+            "duration_ms": duration_ms,
+        }

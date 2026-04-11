@@ -177,3 +177,119 @@ def test_ensure_agent_rebuilds_when_spec_hash_drifts(tmp_path):
     assert agent_id == "agent_rebuilt"
     client.beta.agents.create.assert_called_once()
     db.upsert_dispatch_agent.assert_called_once()
+
+
+# ── Sub-session lifecycle ───────────────────────────────────────────
+
+
+class _FakeStream:
+    """Context manager that yields a canned list of events."""
+
+    def __init__(self, events):
+        self._events = events
+
+    def __enter__(self):
+        return iter(self._events)
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _model_end(input_tokens, output_tokens):
+    return SimpleNamespace(
+        type="span.model_request_end",
+        model="claude-opus-4-6",
+        model_usage=SimpleNamespace(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+        ),
+    )
+
+
+def _agent_message(text):
+    return SimpleNamespace(
+        type="agent.message",
+        content=[SimpleNamespace(text=text)],
+    )
+
+
+def _idle():
+    return SimpleNamespace(type="session.status_idle", stop_reason=None)
+
+
+def _terminated(error="boom"):
+    return SimpleNamespace(type="session.status_terminated", error=error)
+
+
+def test_run_sub_session_returns_successful_result(tmp_path):
+    manager, db, client, _ = _make_manager(tmp_path)
+    client.beta.sessions.create.return_value = SimpleNamespace(id="sesn_sub_1")
+    client.beta.sessions.events.stream.return_value = _FakeStream([
+        _model_end(100, 25),
+        _agent_message("Research complete. Findings: ..."),
+        _idle(),
+    ])
+
+    result = manager._run_sub_session(
+        parent_session_id="sesn_parent",
+        agent_id="agent_abc",
+        node_name="valid_node",
+        input_data={"task": "do the thing"},
+    )
+
+    assert result["status"] == "complete"
+    assert "Research complete" in result["output"]
+    assert result["tokens"]["input"] == 100
+    assert result["tokens"]["output"] == 25
+    assert result["cost_usd"] > 0
+    assert result["sub_session_id"] == "sesn_sub_1"
+    db.record_dispatch_start.assert_called_once()
+    db.record_dispatch_complete.assert_called_once()
+    db.record_dispatch_failure.assert_not_called()
+
+
+def test_run_sub_session_reports_termination_as_failure(tmp_path):
+    manager, db, client, _ = _make_manager(tmp_path)
+    client.beta.sessions.create.return_value = SimpleNamespace(id="sesn_sub_2")
+    client.beta.sessions.events.stream.return_value = _FakeStream([
+        _model_end(50, 0),
+        _terminated("container restart"),
+    ])
+
+    result = manager._run_sub_session(
+        parent_session_id="sesn_parent",
+        agent_id="agent_abc",
+        node_name="valid_node",
+        input_data={},
+    )
+
+    assert result["status"] == "failed"
+    assert "container restart" in result["error"]
+    db.record_dispatch_failure.assert_called_once()
+    db.record_dispatch_complete.assert_not_called()
+
+
+def test_run_sub_session_sends_input_as_user_message(tmp_path):
+    manager, db, client, _ = _make_manager(tmp_path)
+    client.beta.sessions.create.return_value = SimpleNamespace(id="sesn_sub_3")
+    client.beta.sessions.events.stream.return_value = _FakeStream([
+        _model_end(10, 5),
+        _agent_message("ok"),
+        _idle(),
+    ])
+
+    manager._run_sub_session(
+        parent_session_id="sesn_parent",
+        agent_id="agent_abc",
+        node_name="valid_node",
+        input_data={"task": "ping"},
+    )
+
+    send_call = client.beta.sessions.events.send.call_args
+    assert send_call.args[0] == "sesn_sub_3"
+    events = send_call.kwargs["events"]
+    assert events[0]["type"] == "user.message"
+    payload_text = events[0]["content"][0]["text"]
+    assert "ping" in payload_text
