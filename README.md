@@ -26,7 +26,10 @@ See `docs/CLOUD_ARCHITECTURE.md` for the full architectural writeup — that doc
 | Dispatch subsystem (DISPATCH fence parser, per-node agent cache, sub-session lifecycle, result forwarding) | **Done** |
 | Protocol refresh on session resume (no drift between orchestrator and Kernel) | **Done** |
 | Live smoke-tested end-to-end | **Done** (2026-04-10) |
-| Dashboard integration (WebSocket bridge, Cytoscape task graph, HITL widget swap) | **Pending** |
+| Dashboard WebSocket bridge (port 8002) + HTTP panel API (port 8003) — Phase A | **Done** (2026-04-10) |
+| `WebSocketHitlHandler` (swapped in for `StdinHitlHandler` when dashboard is live) | **Done** |
+| Snapshot-on-connect so late-joining dashboards see current state | **Done** |
+| Dashboard tab in forex-ml-platform (Cytoscape graph + panels + HITL widget swap) — Phase B | **Pending** (separate repo) |
 | Parallel dispatch via thread pool | **Backlog** |
 | Dispatch idempotency on orchestrator restart | **Backlog** |
 | Cost rollup across parent + sub-sessions | **Backlog** |
@@ -84,7 +87,36 @@ The orchestrator must be running (or restarted) to consume the response — send
 
 ### Watching What It's Doing
 
-All events land in PostgreSQL in real time. Until the dashboard integration ships (Task 21), querying `psql` directly is the authoritative way to watch:
+All events land in PostgreSQL in real time. The dashboard bridge (Phase A, shipped 2026-04-10) exposes them live on `ws://localhost:8002` with a companion HTTP API on `http://localhost:8003` — the forex-ml-platform dashboard tab (Phase B) will consume both. Until Phase B lands, operators have three options:
+
+**A. Connect a WebSocket client directly** (for live event streaming):
+
+```bash
+python3 -c "
+import asyncio, json, websockets
+async def go():
+    async with websockets.connect('ws://127.0.0.1:8002') as ws:
+        for _ in range(30):
+            msg = await ws.recv()
+            e = json.loads(msg)
+            print(f\"[{e['event_type']}] {json.dumps(e['payload'])[:120]}\")
+asyncio.run(go())
+"
+```
+
+On connect you'll immediately receive a snapshot of the current parent session state plus the 20 most recent dispatches. Live events follow.
+
+**B. Hit the HTTP panel API** (for point-in-time state):
+
+```bash
+curl -s http://127.0.0.1:8003/api/cloud/health       | python3 -m json.tool
+curl -s http://127.0.0.1:8003/api/cloud/session      | python3 -m json.tool
+curl -s http://127.0.0.1:8003/api/cloud/dispatches   | python3 -m json.tool
+curl -s http://127.0.0.1:8003/api/cloud/files        | python3 -m json.tool
+curl -s http://127.0.0.1:8003/api/cloud/agents       | python3 -m json.tool
+```
+
+**C. Query postgres directly** (still works; handy for custom slices):
 
 ```bash
 # Recent messages (full text, no 200-char truncation)
@@ -132,14 +164,21 @@ ora-kernel-cloud/
 │   ├── agent_manager.py                 # Agent + environment CRUD
 │   ├── session_manager.py               # Session lifecycle + BOOTSTRAP_PROMPT +
 │   │                                    #   SYNC_SNAPSHOT_PROTOCOL + DISPATCH_PROTOCOL
-│   ├── event_consumer.py                # SSE loop + event routing
+│   ├── event_consumer.py                # SSE loop + event routing (to file_sync,
+│   │                                    #   dispatch, ws_bridge)
 │   ├── file_sync.py                     # CDC + snapshot reconciliation
 │   ├── dispatch.py                      # DISPATCH fence -> sub-session broker
-│   ├── hitl.py                          # Stdin-based HITL handler
+│   ├── hitl.py                          # Stdin-based HITL handler (fallback)
+│   ├── ws_events.py                     # WebSocket envelope + factories (protocol
+│   │                                    #   source of truth, matches forex-ml client)
+│   ├── ws_bridge.py                     # Background-thread WebSocket server (8002)
+│   ├── ws_hitl.py                       # WebSocket HITL handler (active when bridge
+│   │                                    #   is live; swaps out hitl.py)
+│   ├── http_api.py                      # Panel HTTP API (8003) — 5 read-only endpoints
 │   ├── scheduler.py                     # APScheduler (5 triggers)
 │   ├── db.py                            # psycopg2 wrapper
 │   ├── config.py                        # .env + config.yaml loader
-│   └── tests/                           # 72 unit + integration tests
+│   └── tests/                           # 130+ unit + integration tests
 ├── kernel-files/                        # What the Kernel clones into /work
 │   ├── CLAUDE.md                        # Kernel constitution (protected)
 │   ├── PROJECT_DNA.md                   # Mission config (protected)
@@ -167,7 +206,7 @@ ora-kernel-cloud/
 ## Testing
 
 ```bash
-# Full unit + integration suite (72 tests, requires local postgres for the
+# Full unit + integration suite (130+ tests, requires local postgres for the
 # db_dispatch integration tests — they auto-skip if postgres is unreachable)
 python3 -m pytest orchestrator/tests/
 

@@ -2,7 +2,7 @@
 
 Living document of the current backlog. Updated as work lands.
 
-**Last updated:** 2026-04-10
+**Last updated:** 2026-04-10 (after W10 / dashboard bridge Phase A)
 
 For the pre-session-2 state of this document — what was missing before visibility/HITL/file-sync and the dispatch subsystem were built — see `docs/history/2026-04-08-pre-session-state.txt`.
 
@@ -10,32 +10,40 @@ For the pre-session-2 state of this document — what was missing before visibil
 
 ## Where We Are
 
-As of 2026-04-10, ora-kernel-cloud is **operationally useful for single-session work**. The orchestrator runs, the parent Managed Agent session is persistent, schedulers fire, visibility into the activity log is complete, HITL works from stdin, file sync reconciles WISDOM/journal state across container restarts, and the dispatch subsystem translates Kernel `DISPATCH` fences into focused sub-agent sessions. All 72 unit + integration tests pass. The dispatch pipeline has been smoke-tested live end-to-end with two successful round-trips.
+As of 2026-04-10, ora-kernel-cloud is **operationally useful and dashboard-ready on the orchestrator side**. The orchestrator runs, the parent Managed Agent session is persistent, schedulers fire, visibility into the activity log is complete, HITL works over WebSocket when a dashboard is connected (falling back to stdin otherwise), file sync reconciles WISDOM/journal state across container restarts, the dispatch subsystem translates Kernel `DISPATCH` fences into focused sub-agent sessions, and the dashboard WebSocket bridge + HTTP panel API are live on ports 8002/8003 with a protocol envelope that matches forex-ml-platform's existing `OrchestratorClient` client class exactly. **130+ unit + integration tests pass.** Live smoke-tested end-to-end twice: dispatch round-trip (2 successful dispatches) and dashboard bridge round-trip (inbound USER_MESSAGE → Kernel reply via CHAT_RESPONSE in 5.5s, 41-frame snapshot-on-connect verified).
 
-See `docs/CLOUD_ARCHITECTURE.md` for the current architectural state and `CHANGELOG.md` § 2.0.0-cloud.1 for the full list of what shipped.
+See `docs/CLOUD_ARCHITECTURE.md` for the current architectural state and `CHANGELOG.md` § 2.0.0-cloud.2 for the full list of what shipped in the dashboard-bridge release.
 
 ---
 
 ## Immediate Priorities
 
-### 1. Dashboard integration (Tasks 21 + 22)
+### 1. Dashboard tab in forex-ml-platform (Phase B)
 
-**Status:** Planned. Task 21 is to write the formal plan via the `superpowers:writing-plans` skill; Task 22 is execution. Task 22 is blocked by Task 21.
+**Status:** Unblocked. The orchestrator side (Phase A) is complete and stable. Phase B is a separate plan against the sibling `forex-ml-platform` repo — zero changes expected to `ora-kernel-cloud` itself.
 
-**Why it matters:** The orchestrator is the data plane; the dashboard is the operator's window into it. Until the dashboard integration lands, the only way to watch what the Kernel is doing is `psql` queries. The dispatch subsystem gives the dashboard real data to surface — every sub-session is a row in `dispatch_sessions` with parent linkage, status, tokens, cost, duration.
+**Why it matters:** The orchestrator is now the data plane with a stable protocol. The dashboard is the operator's window into it. Until Phase B lands, the only ways to watch what the Kernel is doing are (a) `psql` queries, (b) a raw `websockets.connect` client like the W10 smoke test script, or (c) `curl` against the panel API. All three work but none of them are pleasant.
 
-**What the dashboard needs to surface:**
-- **Live task graph** — Cytoscape nodes from `dispatch_sessions`, edges by `parent_session_id`, colors by status. Running sub-sessions animate. The "live task graph" vision from the original CLOUD_ARCHITECTURE.md is now backed by real data.
-- **Agent health panel** — `cloud_sessions` row for the parent (status, uptime, running totals). Updates on every SSE event.
-- **Cost panel** — parent session cost + sum of `dispatch_sessions.cost_usd`. Hourly burn rate, daily/monthly projection.
-- **Event stream** — scrolling log of recent `orch_activity_log` entries, filterable by action. Replaces the current psql-query workflow.
-- **HITL widget** — extends the existing forex-ml dashboard HITL widget to consume `tool_confirmation` events forwarded by the orchestrator. Replaces `StdinHitlHandler` as the frontline handler; stdin becomes the fallback.
-- **DISPATCH fence visualization** — when an `agent.message` contains a DISPATCH fence, highlight it and show a spinner until the matching `DISPATCH_RESULT` arrives.
-- **File sync status** — table of `kernel_files_sync` rows with `synced_from` column and last-updated timestamp, so the operator can see CDC-vs-snapshot activity.
+**Phase B work plan (to be formally written via `superpowers:writing-plans` in the forex-ml-platform repo):**
 
-**Architecture:** WebSocket bridge on port 8002 in the orchestrator process (`orchestrator/ws_bridge.py`). Forwards events to the forex-ml dashboard's existing Orchestration tab (`forex-ml-platform/.../orchestrator-client.js`). The existing HITL widget is extended for Managed Agent confirmations.
+1. **Parameterize `src/dashboard/orchestrator-client.js`** to accept `wsUrl` as a constructor argument. Currently hard-coded to `ws://localhost:8000` on line 29. The class itself already takes `graphContainerId` and `hudIds` in its constructor, so it's cleanly multi-instantiable — only the URL needs to be lifted.
+2. **Add a new "Cloud Kernel" tab** to `dashboard.html` alongside the existing Orchestrator tab. The DashboardGenerator monolith needs a new `<div id="tab-cloud-kernel">` section with its own Cytoscape graph container and HUD element IDs.
+3. **Instantiate `new OrchestratorClient(...)` twice** — once against `ws://localhost:8000` for forex-ml's own orchestration (unchanged), once against `ws://localhost:8002` for ora-kernel-cloud (new). Separate graph containers, separate HUD IDs, separate state. Zero protocol divergence because the envelope format and event types are identical.
+4. **Add HTTP polling panels** for `http://localhost:8003/api/cloud/{session,dispatches,files,agents}`. The existing forex-ml chat polling pattern is a good reference — poll on an interval, update the DOM, show stale markers when polling fails.
+5. **Extend the HITL widget** to route `HITL_NEEDED` events from the cloud kernel's bridge to the appropriate `HITL_RESPONSE` inbound message (port 8002), separate from the existing forex-ml HITL flow. The operator clicks Approve/Discuss in the widget, and the JS sends `{event_type: "HITL_RESPONSE", payload: {request_id, decision, reason}}` back over the cloud bridge.
+6. **Update `scripts/start_orchestrator.sh`** (or document a separate launch) so a single command starts both forex-ml's orchestration AND ora-kernel-cloud's orchestrator, with a health check that waits for both port 8000 and port 8002 to be reachable before opening the browser.
 
-**Unblocked by:** the dispatch subsystem, because it gave us something worth graphing.
+**What the Cloud Kernel tab will surface** (all data already live via Phase A):
+
+- **Live task graph** (Cytoscape) — `NODE_UPDATE` + `EDGE_UPDATE` events paint the DAG; `status` drives node color (running=cyan, complete=green, failed=red). Snapshot-on-connect pre-populates up to 20 recent dispatches so the graph isn't empty on first load.
+- **Agent health panel** — `SYSTEM_STATUS` events + `/api/cloud/session` polling. Session ID, status, uptime, cost total.
+- **Cost panel** — `/api/cloud/session` for parent cost, `/api/cloud/dispatches` summed for dispatch cost, both combined for "task total". Hourly burn rate projection.
+- **Event stream** — `ACTIVITY` + `CHAT_RESPONSE` events in a scrolling log, filterable by action.
+- **HITL widget** — `HITL_NEEDED` events pop the Approve/Discuss widget; response sends `HITL_RESPONSE` inbound.
+- **DISPATCH fence highlights** — when a `CHAT_RESPONSE` contains a DISPATCH fence, highlight it and show a spinner until the matching `NODE_UPDATE(status=complete|failed)` arrives for the same node_name.
+- **File sync status** — `/api/cloud/files` polling. Table of tracked files, `synced_from` column, last-updated column.
+
+**Phase A is done; nothing ora-kernel-cloud-side is blocking Phase B.** The protocol contract is documented in `docs/CLOUD_ARCHITECTURE.md` § WebSocketBridge and the JSON endpoints are documented in § PanelApiServer.
 
 ---
 

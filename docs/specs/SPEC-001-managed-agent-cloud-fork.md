@@ -16,7 +16,8 @@
 | Phase 1 — Thin Orchestrator (MVP) | ✅ Complete |
 | **Phase 2.5 — Dispatch Subsystem** (not in original spec, added 2026-04-10) | ✅ Complete |
 | Phase 3 — File Sync | ✅ Complete (CDC + snapshot reconciliation, not the originally-envisioned write-through) |
-| Phase 2 — Dashboard Integration | ⏸ Pending (Tasks 21 + 22 in the in-session task list) |
+| **Phase 2A — Dashboard Bridge (orchestrator side)** | ✅ Complete 2026-04-10. WebSocket bridge on port 8002, HTTP panel API on port 8003, `WebSocketHitlHandler` swap, snapshot-on-connect. Envelope format mirrors forex-ml's `OrchestratorClient` exactly so Phase B will reuse that class unchanged. |
+| **Phase 2B — Dashboard tab (forex-ml-platform side)** | ⏸ Pending in sibling repo. See `docs/next_steps.md` § 1. |
 | Phase 4 — Hybrid Mode (local TUI + cloud) | 🗂 Deferred (not an MVP priority) |
 
 **What changed from the original spec:** During live diagnostic testing on 2026-04-10, we discovered that the Anthropic Managed Agent toolset (`agent_toolset_20260401`) does NOT expose an Agent/Task/subagent-dispatch tool — only `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_search`, `web_fetch`. This invalidated the base ora-kernel's dispatch model in the cloud. **Phase 2.5 — the dispatch subsystem — was added as a response**: the orchestrator became a dispatch broker, and the Kernel signals delegation via structured `` ```DISPATCH `` fenced blocks. This is architecturally significant and documented in `docs/CLOUD_ARCHITECTURE.md` § The Core Constraint.
@@ -42,6 +43,7 @@ The base ORA Kernel requires a Claude Code TUI session to be running. The Kernel
 - [x] WISDOM.md and journal entries survive container restarts — via CDC + snapshot reconciliation rather than the originally-envisioned write-through
 - [ ] A local Claude Code TUI can share the same postgres state (hybrid mode) — **deferred, not an MVP priority**
 - [x] *(Added 2026-04-10)* Kernel can dispatch work to focused sub-agents despite the missing Agent tool — via the Phase 2.5 dispatch subsystem
+- [x] *(Partially met 2026-04-10)* Phase 2A — orchestrator-side dashboard bridge complete: WebSocketBridge (`ws_bridge.py`), PanelApiServer (`http_api.py`), WebSocketHitlHandler (`ws_hitl.py`), snapshot-on-connect, live smoke-tested round-trip in 5.5s. Phase 2B (dashboard tab in forex-ml-platform) is unblocked but not yet implemented in its sibling repo.
 
 ---
 

@@ -204,11 +204,77 @@ Per-dispatch exceptions are caught at the `handle_message` level and converted t
 - Realistic dispatch (~3000 in / 500 out): ~$0.0275 per call
 - Full Quad (4 nodes sequential): ~18–30s, ~$0.11 per task
 
-### StdinHitlHandler (`orchestrator/hitl.py`)
+### StdinHitlHandler (`orchestrator/hitl.py`) — fallback HITL
 
 Stdin-based human-in-the-loop approval handler. When `EventConsumer._handle_tool_use` sees a `tool_confirmation` event, it invokes the injected `on_hitl_needed` callback. `StdinHitlHandler.handle` prints the proposed tool call, reads `y`/`n` + optional reason from stdin, and calls `SessionManager.send_tool_confirmation` to return the decision to the Kernel.
 
-The handler is intentionally blocking and isolated in its own module so the Phase 2 dashboard integration can swap it for a WebSocket handler without touching `EventConsumer`.
+This is the **fallback** HITL handler — it runs when `config.dashboard.enabled: false` or when the WebSocket bridge fails to start. When the bridge is live, `WebSocketHitlHandler` (below) takes over automatically.
+
+### WebSocketBridge (`orchestrator/ws_bridge.py`) — Phase A dashboard bridge
+
+Thread-safe WebSocket server (bound to `127.0.0.1:8002` by default) that runs `websockets.serve` on a private asyncio event loop inside a background daemon thread. The orchestrator's synchronous SSE event loop broadcasts envelopes to connected dashboard clients by calling `bridge.broadcast(envelope)` from its own thread, which marshals onto the bridge loop via `asyncio.run_coroutine_threadsafe`.
+
+**Envelope format:** `{id: 32-hex-char UUID, event_type: str, payload: dict, timestamp: ISO8601-with-Z}`. This format is **pinned by an external consumer** — `forex-ml-platform`'s `src/dashboard/orchestrator-client.js` parses exactly this shape, and the cloud fork's bridge was deliberately designed to be drop-in compatible. Phase B (the dashboard tab in forex-ml-platform) will instantiate the existing `OrchestratorClient` class twice: once against `ws://localhost:8000` for forex-ml's own orchestration, once against `ws://localhost:8002` for ora-kernel-cloud — zero protocol divergence.
+
+**Outbound event types** (mirrored from forex-ml, defined as constants in `ws_events.py`):
+
+| Event | Emitted by | Meaning |
+|---|---|---|
+| `SYSTEM_STATUS` | `EventConsumer._handle_status_running`/`_idle` | Parent Kernel session status changed |
+| `NODE_UPDATE` | `DispatchManager._run_sub_session` start/complete/fail | A dispatch sub-session changed state in the task DAG |
+| `EDGE_UPDATE` | `DispatchManager._run_sub_session` start | Dependency edge created (parent → sub) |
+| `CHAT_RESPONSE` | `EventConsumer._handle_message` | Full text of an `agent.message` event, forwarded verbatim |
+| `ACTIVITY` | `EventConsumer._handle_tool_use` | Generic activity-log entry (currently just tool_use) |
+| `HITL_NEEDED` | `WebSocketHitlHandler.handle` | Human approval requested for a tool call |
+
+`TREE_CHANGE`, `CHAT_ACK`, and `TASKS_UPDATE` constants are defined for protocol compatibility but not currently emitted by ora-kernel-cloud. `BA_CONTEXT` (forex-ml's business-analyst response event) is deliberately omitted.
+
+**Inbound event types** (client → orchestrator):
+
+| Event | Routed to | Action |
+|---|---|---|
+| `USER_MESSAGE` | `ws_bridge.on_user_message` → `session_mgr.send_message(payload.text)` | Forward dashboard chat text to the Kernel |
+| `ABORT` | `ws_bridge.on_abort` → `session_mgr.interrupt()` | Emergency-stop the Kernel |
+| `HITL_RESPONSE` | `WebSocketHitlHandler.on_response` | Dashboard operator's approve/deny response |
+
+Callbacks run via `loop.run_in_executor(...)` so sync callbacks that do I/O (e.g., `send_message` makes an HTTP call) don't block the bridge event loop from processing other clients.
+
+**Snapshot-on-connect.** `WebSocketBridge.snapshot_provider` is an optional callable that returns a list of envelopes sent to each new client BEFORE adding it to the broadcast set. `__main__.py` wires a closure that pulls the current parent cloud_sessions row plus the 20 most recent dispatch_sessions rows from postgres, so a dashboard connecting mid-session immediately sees current state instead of an empty graph. Frames arrive in a defined order (snapshot first, then live broadcasts) because the client isn't added to `self._clients` until the snapshot is fully sent.
+
+**Shutdown.** `stop()` signals the poll loop to exit; `_serve_forever` awaits `_shutdown_async()` inside the `async with websockets.serve(...)` block, so all client close handshakes complete before the loop closes. A 2s join timeout with a warning log covers the pathological "thread won't exit" case.
+
+### WebSocketHitlHandler (`orchestrator/ws_hitl.py`) — active HITL when bridge is live
+
+Drop-in replacement for `StdinHitlHandler` when the WebSocket bridge has started successfully. Same `.handle(event)` interface so `EventConsumer`'s `on_hitl_needed` wiring is unchanged.
+
+**Flow:**
+1. SSE event loop calls `handle(tool_confirmation_event)`.
+2. If `ws_bridge.client_count == 0`, deny immediately with `"no dashboard connected"` — prevents wedging when no operator is watching. Operators running headless should use `StdinHitlHandler` or disable the dashboard entirely.
+3. Otherwise: lock-guarded snapshot of `_current_request_id`, clear the response Event.
+4. Broadcast a `HITL_NEEDED` envelope via the bridge.
+5. Block on `self._response_event.wait(timeout=120s)` — the lock is NOT held during the wait, so `on_response` can fire from the bridge thread without deadlock.
+6. When the Event fires: lock-guarded read of the response payload, call `send_response(tool_use_id, decision == "approve", reason)`.
+7. If timeout: call `send_response(tool_use_id, False, f"dashboard response timeout ({timeout_seconds}s)")`.
+
+`on_response` is wired into `ws_bridge.on_hitl_response` in `__init__`. It acquires the lock, checks `request_id` match, stores the payload, and sets the Event — all atomic within the lock. Mismatched IDs are logged at DEBUG and silently ignored.
+
+### PanelApiServer (`orchestrator/http_api.py`) — HTTP companion API
+
+Stdlib `ThreadingHTTPServer` bound to `127.0.0.1:8003` by default, running in a background daemon thread. Exposes five read-only JSON endpoints the dashboard polls for panel data the WebSocket protocol doesn't carry naturally:
+
+| Endpoint | Returns | Backed by |
+|---|---|---|
+| `GET /api/cloud/health` | `{status: "ok", port: N}` | — |
+| `GET /api/cloud/session` | Current parent `cloud_sessions` row | `db.get_current_parent_session` |
+| `GET /api/cloud/dispatches?limit=N&parent_session_id=ID` | Recent `dispatch_sessions` rows (default limit 50) | `db.get_recent_dispatches` |
+| `GET /api/cloud/files` | `kernel_files_sync` state with `length(content)` in place of the full body | `db.get_file_sync_state` |
+| `GET /api/cloud/agents` | All `dispatch_agents` rows | `db.list_dispatch_agents` |
+
+Unknown paths return HTTP 404 with `{"error": "not found"}`. Internal errors return HTTP 500 with `{"error": "internal"}`. All JSON responses set `Content-Type: application/json` and `Access-Control-Allow-Origin: *` so the dashboard (served from a different port by forex-ml's chat_server) can fetch without CORS preflight issues.
+
+Zero new runtime dependencies — pure stdlib `http.server` + `json` + `threading` + `urllib.parse`. A datetime-aware JSON encoder handles the `datetime` and `Decimal` values that psycopg2 returns.
+
+**Known limitation.** The server uses the same psycopg2 connection as the rest of the orchestrator (one connection per process), not a connection pool. Concurrent HTTP requests from the dashboard will race on that connection. In practice the dashboard polls at low frequency (every few seconds per panel), so races are rare and the `try/except` in the handler converts any failure to a 500. If the API ever becomes high-traffic, the fix is a `psycopg2.pool.ThreadedConnectionPool` inside `Database`, not a change to `http_api.py`.
 
 ### KernelScheduler (`orchestrator/scheduler.py`)
 
@@ -352,9 +418,14 @@ These are contracts that any future change must respect.
 | Dispatch subsystem — sub-session lifecycle | **Done** | `DispatchManager._run_sub_session` with stall watchdog |
 | Dispatch subsystem — top-level routing | **Done** | `DispatchManager.handle_message` + result formatting |
 | Dispatch subsystem — live smoke test | **Done** | Two round-trips verified 2026-04-10 |
-| Dashboard — WebSocket bridge | **Pending** | Task 21 (plan) / 22 (execute) |
-| Dashboard — Cytoscape task graph | **Pending** | Will surface `dispatch_sessions` rows |
-| Dashboard — cost panel | **Pending** | Must sum parent + sub-session costs |
+| Dashboard bridge — Phase A (orchestrator side) | **Done** | `ws_events.py`, `ws_bridge.py`, `ws_hitl.py`, `http_api.py` (2026-04-10) |
+| Dashboard bridge — protocol envelope | **Done** | Mirrors forex-ml's `orchestrator-client.js` exactly |
+| Dashboard bridge — WebSocket server (port 8002) | **Done** | `WebSocketBridge` with thread-safe broadcast, run_in_executor callbacks |
+| Dashboard bridge — HTTP panel API (port 8003) | **Done** | `PanelApiServer` with 5 JSON endpoints |
+| Dashboard bridge — HITL handler swap | **Done** | `WebSocketHitlHandler` replaces stdin when bridge is live |
+| Dashboard bridge — snapshot-on-connect | **Done** | 41-frame snapshot verified live |
+| Dashboard bridge — live smoke test | **Done** | Full inbound `USER_MESSAGE` → Kernel → `CHAT_RESPONSE` round-trip in 5.5s |
+| Dashboard tab — Phase B (forex-ml-platform side) | **Pending** | Separate repo. Parameterize `wsUrl`, add tab, instantiate `OrchestratorClient` twice |
 | Dispatch parallel execution | **Backlog** | Thread-pool upgrade, protocol unchanged |
 | Dispatch idempotency on restart | **Backlog** | Reconcile `running` rows in `dispatch_sessions` at startup |
 | Cost rollup across parent + sub-sessions | **Backlog** | Single "what did this task cost me?" query |

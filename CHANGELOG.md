@@ -1,5 +1,128 @@
 # Changelog
 
+## [2.0.0-cloud.2] - 2026-04-10
+
+Dashboard WebSocket bridge (Phase A). Orchestrator now exposes a
+dashboard-facing WebSocket + HTTP surface that the forex-ml-platform
+dashboard tab (Phase B, separate repo) can consume without code
+changes to its existing `OrchestratorClient` JavaScript class — the
+envelope format and event types are deliberately identical to what
+forex-ml already speaks. Phase A is testable and operational in
+isolation; Phase B is unblocked and sits in `docs/next_steps.md` as
+the next priority.
+
+### Added — Dashboard bridge (`orchestrator/ws_events.py`, W1)
+
+- Envelope format `{id: 32-hex uuid, event_type, payload, timestamp: ISO8601Z}` — pinned by the forex-ml dashboard's `OrchestratorClient`, treated as a cross-repo protocol contract.
+- Outbound event type constants: `SYSTEM_STATUS`, `NODE_UPDATE`, `EDGE_UPDATE`, `TREE_CHANGE`, `HITL_NEEDED`, `CHAT_RESPONSE`, `CHAT_ACK`, `ACTIVITY`, `TASKS_UPDATE`. `BA_CONTEXT` is deliberately omitted (forex-ml-specific).
+- Inbound event type constants: `USER_MESSAGE`, `ABORT`, `HITL_RESPONSE`.
+- Six outbound factory functions (`system_status`, `node_update`, `edge_update`, `hitl_needed`, `chat_response`, `activity`) that omit None-valued optional fields from their payloads — matches the truthiness checks the JS client uses.
+- `parse_inbound_event` — accepts `USER_MESSAGE`/`ABORT`/`HITL_RESPONSE`, returns `None` for all malformed cases (invalid JSON, non-dict top-level, missing event_type, unknown event_type, non-dict payload).
+- 23 unit tests covering envelope shape, uniqueness, every factory's None-omission contract, every parser reject path.
+
+### Added — `WebSocketBridge` (`orchestrator/ws_bridge.py`, W2)
+
+- Runs `websockets.serve` on a private asyncio event loop inside a background daemon thread, so the synchronous SSE event loop is unaffected.
+- Thread-safe `broadcast(envelope)` marshals onto the bridge loop via `asyncio.run_coroutine_threadsafe`. Snapshot of `self._loop` before the schedule closes the TOCTOU window if `stop()` is racing.
+- Graceful `stop()` — `_serve_forever` awaits `_shutdown_async()` inside the `async with websockets.serve(...)` block, ensuring all client close handshakes complete before the loop closes. Logs a warning if the background thread doesn't exit within the 2s join timeout.
+- Start/restart guard uses `self._thread.is_alive()` so a dead/leaked thread does not block a restart.
+- Inbound callbacks (`on_user_message`, `on_abort`, `on_hitl_response`) are invoked via `loop.run_in_executor(...)` — keeps the bridge loop responsive to other clients even when a callback does blocking I/O (e.g., `SessionManager.send_message` makes an HTTP call).
+- 11 integration tests using real `websockets.connect` clients against an ephemeral-port server.
+
+### Added — EventConsumer broadcasts (W3)
+
+- `EventConsumer` grows an optional `ws_bridge` kwarg. When provided, four SSE event types are broadcast to dashboard clients AFTER the existing db bookkeeping completes (persistence-before-publication — Axiom 1):
+  - `agent.message` → `CHAT_RESPONSE`
+  - `agent.tool_use` → `ACTIVITY`
+  - `session.status_running` → `SYSTEM_STATUS(running)` with running cost total
+  - `session.status_idle` → `SYSTEM_STATUS(idle)` with running cost total
+- Every broadcast wrapped in `try/except Exception; logger.exception("ws_bridge broadcast failed")` so a bridge fault never tears down the SSE loop.
+- 4 regression tests.
+
+### Added — DispatchManager broadcasts (W4)
+
+- `DispatchManager` grows an optional `ws_bridge` kwarg. Four broadcast points emit dispatch lifecycle events:
+  - `_run_sub_session` after `record_dispatch_start`: `NODE_UPDATE(running)` + `EDGE_UPDATE(parent → sub)` (in separate try/except blocks so a failed `node_update` can't silently skip the `edge_update`).
+  - `_run_sub_session` success return: `NODE_UPDATE(complete)` with tokens/cost/duration.
+  - `_run_sub_session` failure return (termination/timeout/stall): `NODE_UPDATE(failed)` with tokens/cost/duration/error.
+  - `handle_message` outer exception handler: `NODE_UPDATE(failed)` for pre-sub-session failures (e.g., missing node spec), guarded by `result.get("sub_session_id") is None` to avoid double-broadcasting failures already emitted by `_run_sub_session`.
+- 4 regression tests including a duplicate-broadcast guard verification (terminated sub-session → exactly one failed NODE_UPDATE).
+
+### Added — HTTP panel API (`orchestrator/http_api.py` + `orchestrator/db.py` helpers, W5 + W6)
+
+- `PanelApiServer` — stdlib `ThreadingHTTPServer` in a background daemon thread. Zero new runtime dependencies.
+- Five read-only JSON endpoints:
+  - `GET /api/cloud/health` → `{status: "ok", port: N}`
+  - `GET /api/cloud/session` → current `cloud_sessions` row (via `db.get_current_parent_session`)
+  - `GET /api/cloud/dispatches?limit=N&parent_session_id=ID` → recent `dispatch_sessions` rows (via `db.get_recent_dispatches`)
+  - `GET /api/cloud/files` → `kernel_files_sync` state with `length(content)` in place of the full body (via `db.get_file_sync_state`)
+  - `GET /api/cloud/agents` → `dispatch_agents` cache (via `db.list_dispatch_agents`)
+- Datetime-aware JSON encoder handles `datetime` and `Decimal` values from psycopg2.
+- `Access-Control-Allow-Origin: *` on all JSON responses so the dashboard (served from a different port) can fetch without CORS preflight issues.
+- Four new read-only `Database` methods covering the panel queries. All parameterized (`%s`), no SQL injection risk.
+- 7 HTTP integration tests using real `urllib.request` against an ephemeral-port server with a mocked Database. 5 postgres integration tests for the db helpers.
+
+### Added — `WebSocketHitlHandler` (`orchestrator/ws_hitl.py`, W7)
+
+- Drop-in replacement for `StdinHitlHandler` when the bridge is active. Same `.handle(event)` interface so `EventConsumer`'s `on_hitl_needed` wiring is unchanged.
+- Flow: extract `tool_use_id` → snapshot state under lock → broadcast `HITL_NEEDED` → block on a `threading.Event` with configurable timeout (default 120s) → lock-guarded read of response payload → call `send_response(tool_use_id, approved, reason)`.
+- `on_response` is wired into `ws_bridge.on_hitl_response` in `__init__`. Matches by `request_id`; mismatched responses are logged and ignored.
+- If `ws_bridge.client_count == 0`, deny immediately with `"no dashboard connected"` — prevents the orchestrator from wedging on a `tool_confirmation` event when nobody is watching.
+- Lock is released BEFORE `_response_event.wait()` — no deadlock possible.
+- 4 unit tests covering all four paths (happy-broadcast + timeout, response resume, mismatched ID rejection, no-clients fast-deny).
+
+### Added — Main entry wiring (W8)
+
+- `orchestrator/__main__.py` constructs `WebSocketBridge` on port 8002 and `PanelApiServer` on port 8003 during startup. Both fail gracefully: bridge failure disables the dashboard path and falls back to `StdinHitlHandler`; api failure keeps the bridge running.
+- HITL handler selection is automatic: `WebSocketHitlHandler` when the bridge is live, `StdinHitlHandler` otherwise. Operators who want headless mode disable the dashboard in `config.yaml`.
+- Bridge inbound callbacks wired to orchestrator actions:
+  - `on_user_message` → `session_mgr.send_message(payload["text"])`
+  - `on_abort` → `session_mgr.interrupt()`
+  - `on_hitl_response` → wired automatically by `WebSocketHitlHandler.__init__`
+- `ws_bridge` is passed to both `DispatchManager` and `EventConsumer` in the initial construction AND the session-restart path inside the `while running:` loop.
+- Shutdown handler stops `panel_api`, then `ws_bridge`, then the db connection (both stops are None-guarded).
+- New `config.yaml` section:
+  ```yaml
+  dashboard:
+    enabled: true
+    websocket_port: 8002
+    http_api_port: 8003
+  ```
+
+### Added — Snapshot-on-connect (W9)
+
+- `WebSocketBridge.snapshot_provider` — optional callable returning a list of envelopes to send to each new client BEFORE adding it to the broadcast set. Frames arrive in a defined order without interleaving live broadcasts.
+- Exception safety: a `snapshot_provider` that raises logs + continues; the client stays connected.
+- `__main__.py` wires a `_build_snapshot` closure that pulls from postgres:
+  - 1 `SYSTEM_STATUS` envelope (current parent `cloud_sessions` row)
+  - Up to 20 `NODE_UPDATE` + `EDGE_UPDATE` pairs from the most recent `dispatch_sessions` rows
+- Verified live in the W10 smoke test: **41 snapshot frames delivered at t=0.02s** on first client connect (1 SYSTEM_STATUS + 20 NODE_UPDATE/EDGE_UPDATE pairs).
+
+### Fixed — `WebSocketBridge.start()` race (W10 smoke test finding)
+
+- The W10 live smoke test against a running orchestrator produced a `TypeError: %d format: a real number is required, not NoneType` stack trace on the `Dashboard WS bridge: ws://127.0.0.1:%d` log line. Root cause: `start()` returned immediately after spawning the background asyncio thread, but `self.port` was still `None` because the async `websockets.serve` hadn't bound yet. The bridge eventually bound correctly — but the log line was ugly.
+- Fix: `start()` now blocks for up to 5s (configurable via `bind_timeout`) until `self.port` is populated, and raises `RuntimeError` if the bind doesn't complete. `__main__.py`'s existing `try/except` around `bridge.start()` catches the RuntimeError and cleanly falls back to the stdin HITL handler.
+- Test fixture simplified — the W2 polling loop inside the fixture is now redundant; the fixture just asserts `b.port is not None` after `start()`.
+
+### Smoke test — W10 live round-trip (2026-04-10)
+
+Verified end-to-end against a live Managed Agent session:
+
+| Check | Result |
+|---|---|
+| Orchestrator startup with bridge + HTTP API + WS HITL | ✅ Clean (after the `start()` bind fix) |
+| All 5 HTTP panel endpoints | ✅ Real data (session, dispatches, files, agents, health, 404) |
+| Snapshot-on-connect | ✅ 41 frames at t=0.02s |
+| Inbound `USER_MESSAGE` → Kernel reply | ✅ Round-trip in 5.5s. Kernel replied *"W10 smoke test acknowledged — bridge is live."* |
+| Live `SYSTEM_STATUS(running → idle)` broadcasts | ✅ Both transitions arrived within the same round-trip |
+| Clean shutdown | ✅ No hanging threads, no stack traces |
+
+### Notes
+
+- Total unit + integration test count grew from 112 (previous release) to 130 during this release (W1 alone added 23; full W1–W9 added 18 more).
+- The dashboard tab in `forex-ml-platform` (Phase B) is unblocked and documented in `docs/next_steps.md`. No `OrchestratorClient` code changes are expected — just parameterizing the hardcoded `wsUrl` and adding a new tab.
+- Phase A adds two open ports on localhost (`8002` and `8003`). Both bind to `127.0.0.1` only, not `0.0.0.0`. No external network exposure.
+
 ## [2.0.0-cloud.1] - 2026-04-10
 
 First cloud-fork release. Runs the ORA Kernel as an Anthropic Managed
