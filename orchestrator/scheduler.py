@@ -23,6 +23,7 @@ _DEFAULTS = {
     "idle_work_hours": [20, 0, 4],
     "consolidation_day": "sunday",
     "consolidation_time": "03:00",
+    "sync_snapshot_interval_hours": 6,
 }
 
 
@@ -50,6 +51,10 @@ class KernelScheduler:
         self.consolidation_time = sched_cfg.get(
             "consolidation_time", _DEFAULTS["consolidation_time"]
         )
+        self.sync_snapshot_interval = sched_cfg.get(
+            "sync_snapshot_interval_hours",
+            _DEFAULTS["sync_snapshot_interval_hours"],
+        )
 
         self._scheduler = BackgroundScheduler()
         self._running = False
@@ -64,6 +69,7 @@ class KernelScheduler:
         self._add_briefing_job()
         self._add_idle_work_jobs()
         self._add_consolidation_job()
+        self._add_sync_snapshot_job()
 
         self._scheduler.start()
         self._running = True
@@ -168,6 +174,16 @@ class KernelScheduler:
             args=["/consolidate"],
             id="consolidation",
             name="consolidation",
+        )
+
+    def _add_sync_snapshot_job(self) -> None:
+        """Every N hours, ask the Kernel to emit a SYNC reconciliation snapshot."""
+        self._scheduler.add_job(
+            func=self.send_trigger,
+            trigger=IntervalTrigger(hours=self.sync_snapshot_interval),
+            args=["/sync-snapshot"],
+            id="sync-snapshot",
+            name="sync-snapshot",
         )
 
     # ------------------------------------------------------------------

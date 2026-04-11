@@ -24,6 +24,7 @@ scheduler:
   idle_work_hours: [20, 0, 4]  # 8pm, midnight, 4am
   consolidation_day: "sunday"
   consolidation_time: "03:00"
+  sync_snapshot_interval_hours: 6  # CDC reconciliation backstop
 
 dashboard:
   websocket_port: 8002
