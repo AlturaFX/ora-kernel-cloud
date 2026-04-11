@@ -287,3 +287,93 @@ class DispatchManager:
             "cost_usd": cost_usd,
             "duration_ms": duration_ms,
         }
+
+    # ── Top-level entry point ───────────────────────────────────────
+
+    def handle_message(self, parent_session_id: str, message_text: str) -> int:
+        """Parse DISPATCH fences in *message_text*, execute each, forward results.
+
+        Returns the number of fences processed (whether successful or
+        failed). Per-dispatch exceptions are caught and converted to
+        FAILED results so one bad dispatch never prevents later ones
+        from running.
+        """
+        if not message_text:
+            return 0
+        fences = parse_dispatch_fences(message_text)
+        if not fences:
+            return 0
+
+        logger.info(
+            "dispatch: parent=%s found %d fence(s)", parent_session_id, len(fences)
+        )
+        for node_name, input_data in fences:
+            try:
+                agent_id = self._ensure_agent(node_name)
+                result = self._run_sub_session(
+                    parent_session_id=parent_session_id,
+                    agent_id=agent_id,
+                    node_name=node_name,
+                    input_data=input_data,
+                )
+            except FileNotFoundError as exc:
+                result = {
+                    "status": "failed",
+                    "node_name": node_name,
+                    "error": f"node spec not found: {exc}",
+                    "output": "",
+                    "tokens": {"input": 0, "output": 0},
+                    "cost_usd": 0.0,
+                    "duration_ms": 0,
+                    "sub_session_id": None,
+                }
+            except Exception as exc:  # noqa: BLE001 — top-level safety net
+                logger.exception("dispatch: unexpected error for %s", node_name)
+                result = {
+                    "status": "failed",
+                    "node_name": node_name,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "output": "",
+                    "tokens": {"input": 0, "output": 0},
+                    "cost_usd": 0.0,
+                    "duration_ms": 0,
+                    "sub_session_id": None,
+                }
+
+            try:
+                self.send_to_parent(
+                    parent_session_id, self._format_result_fence(result)
+                )
+            except Exception:
+                logger.exception(
+                    "dispatch: failed to forward result for %s to parent", node_name
+                )
+
+        return len(fences)
+
+    # ── Result formatting ───────────────────────────────────────────
+
+    @staticmethod
+    def _format_result_fence(result: Dict[str, Any]) -> str:
+        """Render a result dict as a ```DISPATCH_RESULT``` fenced block.
+
+        The parent Kernel parses these the same way the orchestrator
+        parses its DISPATCH fences. Single fenced block, no surrounding
+        prose — the Kernel is instructed to read the fence as the
+        authoritative subagent return value.
+        """
+        header = (
+            f"```DISPATCH_RESULT node={result['node_name']} "
+            f"status={result['status']}"
+        )
+        body = {
+            "output": result.get("output", ""),
+            "tokens": result.get("tokens", {"input": 0, "output": 0}),
+            "cost_usd": result.get("cost_usd", 0.0),
+            "duration_ms": result.get("duration_ms", 0),
+            "sub_session_id": result.get("sub_session_id"),
+            "error": result.get("error"),
+        }
+        return (
+            f"{header}\n{json.dumps(body, indent=2, default=str)}\n```"
+        )

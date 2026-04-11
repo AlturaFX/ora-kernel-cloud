@@ -293,3 +293,87 @@ def test_run_sub_session_sends_input_as_user_message(tmp_path):
     assert events[0]["type"] == "user.message"
     payload_text = events[0]["content"][0]["text"]
     assert "ping" in payload_text
+
+
+# ── DispatchManager.handle_message (top-level entry point) ─────────
+
+def test_handle_message_dispatches_fence_and_sends_result(tmp_path):
+    manager, db, client, send_to_parent = _make_manager(tmp_path)
+    client.beta.agents.create.return_value = SimpleNamespace(id="agent_new")
+    client.beta.sessions.create.return_value = SimpleNamespace(id="sesn_sub")
+    client.beta.sessions.events.stream.return_value = _FakeStream([
+        _model_end(100, 25),
+        _agent_message("result body"),
+        _idle(),
+    ])
+
+    text = (
+        "Dispatching.\n"
+        "```DISPATCH node=valid_node\n"
+        '{"task": "demo"}\n'
+        "```\n"
+    )
+    count = manager.handle_message(parent_session_id="sesn_parent", message_text=text)
+
+    assert count == 1
+    # Result forwarded to parent as a DISPATCH_RESULT fence
+    send_to_parent.assert_called_once()
+    result_args = send_to_parent.call_args
+    assert result_args.args[0] == "sesn_parent"
+    forwarded_text = result_args.args[1]
+    assert "```DISPATCH_RESULT" in forwarded_text
+    assert "node=valid_node" in forwarded_text
+    assert "status=complete" in forwarded_text
+    assert "result body" in forwarded_text
+
+
+def test_handle_message_reports_missing_node_as_failure(tmp_path):
+    manager, db, client, send_to_parent = _make_manager(tmp_path)
+    text = (
+        "```DISPATCH node=nonexistent\n"
+        '{"task": "x"}\n'
+        "```\n"
+    )
+    count = manager.handle_message(parent_session_id="sesn_parent", message_text=text)
+
+    assert count == 1
+    send_to_parent.assert_called_once()
+    forwarded = send_to_parent.call_args.args[1]
+    assert "status=failed" in forwarded
+    assert "nonexistent" in forwarded
+    client.beta.agents.create.assert_not_called()
+
+
+def test_handle_message_returns_zero_when_no_fences(tmp_path):
+    manager, db, client, send_to_parent = _make_manager(tmp_path)
+    count = manager.handle_message("sesn_parent", "just prose")
+    assert count == 0
+    send_to_parent.assert_not_called()
+
+
+def test_handle_message_continues_after_per_dispatch_failure(tmp_path):
+    manager, db, client, send_to_parent = _make_manager(tmp_path)
+    # Build a valid second node spec
+    (tmp_path / "second_node.md").write_text(
+        "---\nname: Second\n---\n\n## System Prompt\n\nYou are Second.\n"
+    )
+    client.beta.agents.create.return_value = SimpleNamespace(id="agent_second")
+    client.beta.sessions.create.return_value = SimpleNamespace(id="sesn_sub")
+    client.beta.sessions.events.stream.return_value = _FakeStream([
+        _model_end(5, 5),
+        _agent_message("ok"),
+        _idle(),
+    ])
+
+    text = (
+        "```DISPATCH node=missing\n{\"task\": \"a\"}\n```\n"
+        "```DISPATCH node=second_node\n{\"task\": \"b\"}\n```\n"
+    )
+    count = manager.handle_message("sesn_parent", text)
+
+    assert count == 2
+    # Both fences produce a DISPATCH_RESULT (one failed, one complete)
+    assert send_to_parent.call_count == 2
+    first, second = send_to_parent.call_args_list
+    assert "status=failed" in first.args[1]
+    assert "status=complete" in second.args[1]
