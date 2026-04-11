@@ -377,3 +377,123 @@ def test_handle_message_continues_after_per_dispatch_failure(tmp_path):
     first, second = send_to_parent.call_args_list
     assert "status=failed" in first.args[1]
     assert "status=complete" in second.args[1]
+
+
+# ── ws_bridge routing ──────────────────────────────────────────────
+
+
+def _make_manager_with_bridge(tmp_path, **overrides):
+    bridge = MagicMock()
+    manager, db, client, send_to_parent = _make_manager(
+        tmp_path, ws_bridge=bridge, **overrides
+    )
+    return manager, db, client, send_to_parent, bridge
+
+
+def test_dispatch_start_broadcasts_node_update_running(tmp_path):
+    manager, db, client, _, bridge = _make_manager_with_bridge(tmp_path)
+    client.beta.agents.create.return_value = SimpleNamespace(id="agent_new")
+    client.beta.sessions.create.return_value = SimpleNamespace(id="sesn_sub")
+    client.beta.sessions.events.stream.return_value = _FakeStream([
+        _model_end(50, 25),
+        _agent_message("done"),
+        _idle(),
+    ])
+
+    manager.handle_message(
+        "sesn_parent",
+        '```DISPATCH node=valid_node\n{"task": "x"}\n```',
+    )
+
+    events = [c.args[0] for c in bridge.broadcast.call_args_list]
+    node_updates = [e for e in events if e["event_type"] == "NODE_UPDATE"]
+    edge_updates = [e for e in events if e["event_type"] == "EDGE_UPDATE"]
+
+    assert len(node_updates) >= 2
+    assert node_updates[0]["payload"]["status"] == "running"
+    assert node_updates[0]["payload"]["node_name"] == "valid_node"
+    assert node_updates[0]["payload"]["parent_id"] == "sesn_parent"
+    assert node_updates[-1]["payload"]["status"] == "complete"
+    assert node_updates[-1]["payload"]["cost_usd"] > 0
+
+    assert len(edge_updates) == 1
+    assert edge_updates[0]["payload"]["from_id"] == "sesn_parent"
+    assert edge_updates[0]["payload"]["to_id"] == "sesn_sub"
+
+
+def test_dispatch_failure_broadcasts_node_update_failed(tmp_path):
+    manager, db, client, _, bridge = _make_manager_with_bridge(tmp_path)
+
+    manager.handle_message(
+        "sesn_parent",
+        '```DISPATCH node=nonexistent\n{"task": "x"}\n```',
+    )
+
+    events = [c.args[0] for c in bridge.broadcast.call_args_list]
+    node_updates = [e for e in events if e["event_type"] == "NODE_UPDATE"]
+    failed_updates = [u for u in node_updates if u["payload"]["status"] == "failed"]
+    assert len(failed_updates) == 1
+    assert failed_updates[0]["payload"]["node_id"] == "failed:nonexistent"
+    assert failed_updates[0]["payload"]["node_name"] == "nonexistent"
+
+
+def test_dispatch_manager_ws_bridge_is_optional(tmp_path):
+    """DispatchManager with ws_bridge=None must exercise every broadcast
+    guard without crashing — empty input, successful dispatch, and a
+    failed dispatch all run cleanly with no bridge attached."""
+    manager, db, client, _ = _make_manager(tmp_path)
+    assert manager.ws_bridge is None  # Default
+
+    # Path 1: empty input, no fences
+    manager.handle_message("sesn_parent", "no fences here")
+
+    # Path 2: successful dispatch — exercises running/edge/complete guards
+    client.beta.agents.create.return_value = SimpleNamespace(id="agent_new")
+    client.beta.sessions.create.return_value = SimpleNamespace(id="sesn_sub")
+    client.beta.sessions.events.stream.return_value = _FakeStream([
+        _model_end(5, 5),
+        _agent_message("ok"),
+        _idle(),
+    ])
+    manager.handle_message(
+        "sesn_parent",
+        '```DISPATCH node=valid_node\n{"task": "x"}\n```',
+    )
+
+    # Path 3: pre-sub-session failure — exercises handle_message outer guard
+    manager.handle_message(
+        "sesn_parent",
+        '```DISPATCH node=nonexistent\n{"task": "y"}\n```',
+    )
+
+
+def test_internally_failed_dispatch_broadcasts_exactly_one_failed_update(tmp_path):
+    """When _run_sub_session fails (terminated), the outer guard in
+    handle_message must NOT fire a second failed broadcast. Exactly
+    one NODE_UPDATE(status=failed) should be seen by the bridge."""
+    manager, db, client, _, bridge = _make_manager_with_bridge(tmp_path)
+    client.beta.agents.create.return_value = SimpleNamespace(id="agent_new")
+    client.beta.sessions.create.return_value = SimpleNamespace(id="sesn_sub")
+    client.beta.sessions.events.stream.return_value = _FakeStream([
+        _model_end(10, 0),
+        _terminated("container restart"),
+    ])
+
+    manager.handle_message(
+        "sesn_parent",
+        '```DISPATCH node=valid_node\n{"task": "x"}\n```',
+    )
+
+    events = [c.args[0] for c in bridge.broadcast.call_args_list]
+    failed_updates = [
+        e for e in events
+        if e["event_type"] == "NODE_UPDATE"
+        and e["payload"]["status"] == "failed"
+    ]
+    assert len(failed_updates) == 1, (
+        f"expected exactly 1 failed NODE_UPDATE, got {len(failed_updates)}"
+    )
+    # The one that fires is _run_sub_session's internal broadcast — it has
+    # the real sub_session_id, not the synthetic 'failed:...' id
+    assert failed_updates[0]["payload"]["node_id"] == "sesn_sub"
+    assert failed_updates[0]["payload"]["error"] is not None

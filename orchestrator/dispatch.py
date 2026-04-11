@@ -31,6 +31,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
 
+from orchestrator import ws_events
+
 logger = logging.getLogger(__name__)
 
 
@@ -116,6 +118,7 @@ class DispatchManager:
         node_spec_dir: Path,
         max_dispatch_seconds: float = 600.0,
         stream_read_timeout_seconds: float = 180.0,
+        ws_bridge=None,
     ):
         self.db = db
         self.client = client
@@ -124,6 +127,7 @@ class DispatchManager:
         self.node_spec_dir = Path(node_spec_dir)
         self.max_dispatch_seconds = max_dispatch_seconds
         self.stream_read_timeout_seconds = stream_read_timeout_seconds
+        self.ws_bridge = ws_bridge
 
     # ── Node spec loading ───────────────────────────────────────────
 
@@ -216,6 +220,27 @@ class DispatchManager:
             input_data=input_data,
         )
 
+        if self.ws_bridge is not None:
+            try:
+                self.ws_bridge.broadcast(
+                    ws_events.node_update(
+                        node_id=sub_session_id,
+                        parent_id=parent_session_id,
+                        node_name=node_name,
+                        status="running",
+                    )
+                )
+            except Exception:
+                logger.exception("ws_bridge broadcast failed")
+            try:
+                self.ws_bridge.broadcast(
+                    ws_events.edge_update(
+                        from_id=parent_session_id, to_id=sub_session_id
+                    )
+                )
+            except Exception:
+                logger.exception("ws_bridge broadcast failed")
+
         prompt_text = json.dumps(input_data, indent=2, default=str)
         self.client.beta.sessions.events.send(
             sub_session_id,
@@ -293,6 +318,22 @@ class DispatchManager:
             self.db.record_dispatch_failure(
                 sub_session_id=sub_session_id, error=terminated_error
             )
+            if self.ws_bridge is not None:
+                try:
+                    self.ws_bridge.broadcast(
+                        ws_events.node_update(
+                            node_id=sub_session_id,
+                            parent_id=parent_session_id,
+                            node_name=node_name,
+                            status="failed",
+                            tokens={"input": input_tokens, "output": output_tokens},
+                            cost_usd=cost_usd,
+                            duration_ms=duration_ms,
+                            error=terminated_error,
+                        )
+                    )
+                except Exception:
+                    logger.exception("ws_bridge broadcast failed")
             return {
                 "status": "failed",
                 "sub_session_id": sub_session_id,
@@ -312,6 +353,21 @@ class DispatchManager:
             cost_usd=cost_usd,
             duration_ms=duration_ms,
         )
+        if self.ws_bridge is not None:
+            try:
+                self.ws_bridge.broadcast(
+                    ws_events.node_update(
+                        node_id=sub_session_id,
+                        parent_id=parent_session_id,
+                        node_name=node_name,
+                        status="complete",
+                        tokens={"input": input_tokens, "output": output_tokens},
+                        cost_usd=cost_usd,
+                        duration_ms=duration_ms,
+                    )
+                )
+            except Exception:
+                logger.exception("ws_bridge broadcast failed")
         return {
             "status": "complete",
             "sub_session_id": sub_session_id,
@@ -373,6 +429,27 @@ class DispatchManager:
                     "duration_ms": 0,
                     "sub_session_id": None,
                 }
+
+            # Broadcast a failure NODE_UPDATE for failures that occurred
+            # BEFORE _run_sub_session was reached (i.e., no sub_session_id yet).
+            # Failures from inside _run_sub_session are already broadcast there.
+            if (
+                self.ws_bridge is not None
+                and result.get("status") == "failed"
+                and result.get("sub_session_id") is None
+            ):
+                try:
+                    self.ws_bridge.broadcast(
+                        ws_events.node_update(
+                            node_id=f"failed:{node_name}",
+                            parent_id=parent_session_id,
+                            node_name=node_name,
+                            status="failed",
+                            error=result.get("error"),
+                        )
+                    )
+                except Exception:
+                    logger.exception("ws_bridge broadcast failed")
 
             try:
                 self.send_to_parent(
