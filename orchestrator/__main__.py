@@ -9,12 +9,16 @@ import argparse
 import logging
 import signal
 import sys
+from pathlib import Path
+
+from anthropic import Anthropic
 
 from orchestrator.config import load_config, get_api_key, get_postgres_dsn
 from orchestrator.db import Database
 from orchestrator.agent_manager import setup as agent_setup
 from orchestrator.session_manager import SessionManager
 from orchestrator.event_consumer import EventConsumer
+from orchestrator.dispatch import DispatchManager
 from orchestrator.file_sync import FileSync
 from orchestrator.hitl import StdinHitlHandler
 from orchestrator.scheduler import KernelScheduler
@@ -82,12 +86,32 @@ def main():
             session_mgr.bootstrap()
         else:
             logger.info(f"Resuming existing session: {session_mgr.session_id}")
+            # Re-teach the SYNC + DISPATCH protocols to the resumed
+            # session — its bootstrap may pre-date them.
+            session_mgr.send_protocol_refresh()
 
     # File sync (change-data-capture + snapshot reconciliation)
     file_sync = FileSync(db)
 
     # HITL handler — stdin prompt, hot-swappable for dashboard later
     hitl = StdinHitlHandler(send_response=session_mgr.send_tool_confirmation)
+
+    # Dispatch manager — translates DISPATCH fences into sub-sessions
+    node_spec_dir = (
+        Path(__file__).resolve().parent.parent
+        / "kernel-files"
+        / ".claude"
+        / "kernel"
+        / "nodes"
+        / "system"
+    )
+    dispatch_manager = DispatchManager(
+        db=db,
+        client=Anthropic(api_key=api_key),
+        environment_id=env_id,
+        send_to_parent=lambda _sid, text: session_mgr.send_message(text),
+        node_spec_dir=node_spec_dir,
+    )
 
     # Event consumer
     consumer = EventConsumer(
@@ -97,6 +121,7 @@ def main():
         environment_id=env_id,
         on_hitl_needed=hitl.handle,
         file_sync=file_sync,
+        dispatch_manager=dispatch_manager,
     )
 
     # Scheduler
@@ -147,6 +172,7 @@ def main():
                         environment_id=env_id,
                         on_hitl_needed=hitl.handle,
                         file_sync=file_sync,
+                        dispatch_manager=dispatch_manager,
                     )
                 else:
                     logger.critical("Could not restart session. Exiting.")
