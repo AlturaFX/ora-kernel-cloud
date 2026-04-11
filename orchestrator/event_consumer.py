@@ -186,9 +186,13 @@ class EventConsumer:
             details={"tool_name": tool_name, "input": input_preview},
         )
 
-        # CDC file sync from tool_use events
+        # CDC file sync from tool_use events. Tool names are matched
+        # case-insensitively: the Anthropic Managed Agent toolset emits
+        # lowercase names ("write", "edit") while Claude Code subagents
+        # use capitalized names ("Write", "Edit"). Both must route.
+        tool_name_lc = tool_name.lower() if isinstance(tool_name, str) else ""
         if self.file_sync is not None and isinstance(raw_input, dict):
-            if tool_name == "Write":
+            if tool_name_lc == "write":
                 try:
                     self.file_sync.handle_write(
                         raw_input.get("file_path", ""),
@@ -196,7 +200,7 @@ class EventConsumer:
                     )
                 except Exception:
                     logger.exception("file_sync.handle_write failed")
-            elif tool_name == "Edit":
+            elif tool_name_lc == "edit":
                 try:
                     self.file_sync.handle_edit(
                         raw_input.get("file_path", ""),
@@ -207,7 +211,7 @@ class EventConsumer:
                     logger.exception("file_sync.handle_edit failed")
 
         # Detect HITL confirmation requests
-        if tool_name == "tool_confirmation" and self.on_hitl_needed is not None:
+        if tool_name_lc == "tool_confirmation" and self.on_hitl_needed is not None:
             self.on_hitl_needed(event)
 
     def _handle_tool_result(self, session_id: str, event: Any) -> None:

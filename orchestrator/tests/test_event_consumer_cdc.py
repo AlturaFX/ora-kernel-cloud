@@ -19,18 +19,21 @@ def _consumer(file_sync):
     )
 
 
-def _write_event(file_path, content):
+def _write_event(file_path, content, tool_name="write"):
+    # The Managed Agent toolset emits lowercase tool names ("write", "edit",
+    # "bash", "read"). Default to lowercase; individual tests override when
+    # they want to pin case behavior.
     return SimpleNamespace(
         type="agent.tool_use",
-        name="Write",
+        name=tool_name,
         input={"file_path": file_path, "content": content},
     )
 
 
-def _edit_event(file_path, old, new):
+def _edit_event(file_path, old, new, tool_name="edit"):
     return SimpleNamespace(
         type="agent.tool_use",
-        name="Edit",
+        name=tool_name,
         input={"file_path": file_path, "old_string": old, "new_string": new},
     )
 
@@ -110,3 +113,28 @@ def test_file_sync_is_optional():
         _write_event("/work/.claude/kernel/journal/WISDOM.md", "x"),
     )
     consumer._handle_message("sess_1", _message_event("no fences"))
+
+
+def test_capitalized_write_also_routes_to_file_sync():
+    """Regression: routing must be case-insensitive so Claude Code-style
+    tool names ('Write'/'Edit') also fire CDC — the Managed Agent toolset
+    uses lowercase, but we should not break on either case."""
+    fs = MagicMock()
+    consumer = _consumer(fs)
+
+    consumer._handle_tool_use(
+        "sess_1",
+        _write_event("/work/.claude/kernel/journal/WISDOM.md", "x", tool_name="Write"),
+    )
+    fs.handle_write.assert_called_once()
+
+
+def test_capitalized_edit_also_routes_to_file_sync():
+    fs = MagicMock()
+    consumer = _consumer(fs)
+
+    consumer._handle_tool_use(
+        "sess_1",
+        _edit_event("/work/.claude/kernel/journal/WISDOM.md", "a", "b", tool_name="Edit"),
+    )
+    fs.handle_edit.assert_called_once()
