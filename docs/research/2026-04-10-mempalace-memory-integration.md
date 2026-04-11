@@ -713,6 +713,55 @@ Out of scope for this research. Noted as Phase 6 in § 6; the forex-ml-platform 
 
 ---
 
+## 9.5 Related prior work in the MemPalace fork network
+
+Survey of the MemPalace fork network (5,111 forks as of 2026-04-10, ~230 inspected) found exactly **one** fork that has done substantial work directly relevant to this spec:
+
+**`noeljackson/mempalace`** — https://github.com/noeljackson/mempalace (3 stars, 2 commits ahead)
+
+Two commits: `e8fc3f35` "feat: add Postgres + pgvector storage backend" and `42798556` "feat: harden Postgres backend". Centers on a new `mempalace/storage.py` (~767 lines) that introduces a pluggable storage abstraction with `ChromaCollectionAdapter` and `PostgresCollectionAdapter` exposing identical duck-typed interfaces. Key design choices:
+
+- **Single `mempalace_documents` table** keyed on `(collection_name, id)` — avoids a table-per-collection explosion
+- **HNSW index** on the embedding column via `CREATE INDEX ... USING hnsw (embedding vector_cosine_ops)`
+- **GIN index** on JSONB metadata column
+- **`<=>` cosine distance operator** via raw psycopg3 SQL — does NOT use the `pgvector` Python package
+- **`psycopg_pool.ConnectionPool`** (min=1, max=10) with graceful fallback to raw connections
+- **Composable SQL queries** via `psycopg.sql` to prevent injection in metadata WHERE clauses
+- **Metadata filter operators**: `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte` — compatible with ChromaDB's filter DSL so the Chroma path keeps working
+- **`EmbeddingProvider` with fallback** — uses Chroma's built-in embedder when available, falls back to `sentence-transformers` with `all-MiniLM-L6-v2` when not
+- **Dimension validation** at schema-creation time to prevent silent vector-size mismatches
+- **`migrate-postgres` CLI subcommand** for one-time ChromaDB → postgres migration
+- **Test suite** in `tests/test_postgres.py` (297 lines) that skips unless `MEMPALACE_TEST_POSTGRES_DSN` is set
+
+**What it does NOT cover** (gaps relative to our Option C):
+
+- **Keeps ChromaDB as default** — their fork is dual-backend, not replacement
+- **Does NOT migrate the SQLite knowledge graph** — `knowledge_graph.py` is untouched; KG stays on SQLite
+- **Uses psycopg3**, not the psycopg2 our orchestrator already runs on (minor port)
+- **Does NOT use the `pgvector` Python package** — registers the operator via raw SQL instead (works fine, slightly less ergonomic)
+
+**Implications for our plan:**
+
+This is meaningful prior work and changes the framing of § 5 above:
+
+1. **Schema + query patterns are already validated.** The `(collection_name, id)` composite key, HNSW + GIN index combo, metadata filter DSL are all reasonable starting points that someone else already debugged. We don't need to invent them.
+2. **We can learn from their hardening work.** The SQL-injection protection via `psycopg.sql` composable queries is a pattern we should adopt regardless.
+3. **We still have novel work to do.** The KG → postgres migration (~400 lines adapted from MemPalace's `knowledge_graph.py`), the orchestrator-side integration (ingester, recall broker, fence protocol), the optional-dependency patterns, and the full replacement of ChromaDB (not dual-backend) are all still ours to write.
+4. **License composability.** `noeljackson/mempalace` is also MIT (as a fork of MIT MemPalace), so adapting code from this fork with attribution works the same way — just a second attribution entry pointing at noeljackson's repo alongside the MemPalace upstream.
+5. **psycopg3 vs psycopg2 decision.** Our orchestrator uses psycopg2. noeljackson uses psycopg3. Adopting their `storage.py` directly would pull in psycopg3. Three options: (a) port their `storage.py` back to psycopg2, (b) add psycopg3 as a second driver alongside psycopg2, (c) read their implementation as reference and write our own psycopg2 version. **Preliminary answer: (c).** Maintaining two psycopg versions is not worth the complexity.
+
+**Action for Phase 1 planning:** before starting implementation, read the full `mempalace/storage.py` from `noeljackson/mempalace` (at commit `42798556` or newer). The schema design, query patterns, metadata filter composition, dimension validation, and test structure are all directly instructive. Cite in `NOTICES.md` under a second attribution entry.
+
+**Other forks worth knowing about** (not directly relevant but surfaced by the survey):
+
+- **`EndeavorYen/mempalace`** (31 commits ahead, 4 stars) — added Ollama embedding provider + embedding function cache + KG auto-extraction + multi-hop traversal. Architecturally interesting for the **embedding layer**, not storage. Potentially useful if we ever want non-OpenAI local embeddings; skip for Phase 1.
+- **`jnadeau207-collab/StandardFileSystemRebrandedAsGodLikeAiMemory`** (2 commits ahead) — wired up MemPalace's AAAK and KG features that upstream had scaffolded but left unconnected. Not relevant to our plans.
+- **`akarnokd/mempalace`** (2 commits ahead) — entropy-beauty-scan utility. Unrelated.
+
+**Bottom line on the fork survey:** the ecosystem is dominated by drive-by forks (5,100+ with zero commits ahead). Only one fork has done serious work in the storage layer. That fork validates our design direction and provides reference implementations of the schema and query patterns, but does not replace our need to write the integration, the KG migration, or the orchestrator-side ingester / recall broker. We are not duplicating effort; we are benefiting from one person's head start on the schema and query mechanics.
+
+---
+
 ## 10. References
 
 - **Upstream repo:** https://github.com/milla-jovovich/mempalace (v3.1.0, MIT)

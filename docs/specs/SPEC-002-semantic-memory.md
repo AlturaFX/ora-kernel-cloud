@@ -673,13 +673,27 @@ See `docs/research/2026-04-10-mempalace-memory-integration.md` § 7 for the full
 
 Per MIT license, the following upstream files are adapted with attribution:
 
-| Upstream file (MemPalace, MIT, Copyright (c) 2026 Milla Jovovich & Ben Sigman) | Adaptation target |
+**From `milla-jovovich/mempalace` (MIT, Copyright (c) 2026 Milla Jovovich & Ben Sigman):**
+
+| Upstream file | Adaptation target |
 |---|---|
 | `mempalace/knowledge_graph.py` (393 lines) | `orchestrator/memory/knowledge_graph.py` |
 | `mempalace/palace_graph.py` (227 lines) | `orchestrator/memory/palace_graph.py` (Phase 5) |
 | `mempalace/dedup.py` (239 lines) | `orchestrator/memory/dedup.py` |
 | `mempalace/layers.py` (515 lines, partial) | `orchestrator/memory/layers.py` (Phase 3) |
 | `mempalace/searcher.py` (152 lines, reference only) | Informs `orchestrator/memory/semantic_store.py` design |
+
+**From `noeljackson/mempalace` (MIT fork of MemPalace, commit `42798556` "feat: harden Postgres backend"):**
+
+| Upstream file | Adaptation target |
+|---|---|
+| `mempalace/storage.py` § `PostgresCollectionAdapter` + `PostgresBackend._ensure_schema()` (~300 lines of the 767-line file) | Informs `orchestrator/memory/semantic_store.py` schema, query patterns, metadata filter DSL, dimension validation, and SQL-injection-safe composable queries |
+| `tests/test_postgres.py` (297 lines) | Informs `orchestrator/tests/test_semantic_store.py` integration test structure |
+| `mempalace/cli.py` § `migrate-postgres` subcommand (~125 lines) | Informs the Phase 1.5 ChromaDB-free backfill utility pattern (we don't have ChromaDB data to migrate, but the batch-iteration pattern is still useful for `orch_activity_log` → `memory_drawers` backfill) |
+
+**Note on noeljackson's fork:** this is prior work in the MemPalace fork network that did almost exactly the ChromaDB → pgvector swap we're planning, with some important differences: their fork keeps ChromaDB as a dual backend (we replace it entirely), uses psycopg3 (we use psycopg2), does not migrate the SQLite knowledge graph (we do), and uses raw SQL for the `<=>` operator (we'll evaluate the `pgvector` Python package as an option). The design choices (composite `(collection_name, id)` key, HNSW + GIN index combo, `$eq/$ne/$gt/$gte/$lt/$lte` metadata filter operators, dimension validation, composable-SQL injection protection) are all validated by their hardening commit and are directly instructive for our implementation.
+
+See `docs/research/2026-04-10-mempalace-memory-integration.md` § 9.5 for the full fork survey findings.
 
 **Required deliverables:**
 
