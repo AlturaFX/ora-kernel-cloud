@@ -63,3 +63,70 @@ def parse_dispatch_fences(text: str) -> List[Tuple[str, Dict[str, Any]]]:
             continue
         results.append((node, payload))
     return results
+
+
+# Callback type — the dispatcher forwards the result to the parent
+# session by calling this function. Injected from __main__ so the
+# dispatch module never imports SessionManager (avoids import cycle).
+SendToParent = Callable[[str, str], None]  # (parent_session_id, text)
+
+
+class DispatchManager:
+    """Translate ```DISPATCH``` fences into Managed Agent sub-sessions.
+
+    Parameters
+    ----------
+    db : Database
+        Postgres wrapper. Used for the agent cache + dispatch_sessions rows.
+    client : Anthropic
+        Anthropic SDK client. Used for agents.create / sessions.create /
+        sessions.events.{send,stream}.
+    environment_id : str
+        Shared Managed Agent environment ID (reused across dispatches —
+        see the 2026-04-10 feasibility spike).
+    send_to_parent : callable
+        ``send_to_parent(parent_session_id, text)`` — typically
+        ``SessionManager.send_message``-style. Called once per dispatch
+        with the ``` ```DISPATCH_RESULT ``` `` fence that the parent
+        Kernel will see.
+    node_spec_dir : Path
+        Directory containing node spec markdown files. A dispatch with
+        ``node=business_analyst`` reads ``<dir>/business_analyst.md``.
+    max_dispatch_seconds : float
+        Hard timeout on a single dispatch. Sessions that do not reach
+        idle within this window are reported as FAILED with a timeout
+        error. Default 120s.
+    """
+
+    def __init__(
+        self,
+        db,
+        client,
+        environment_id: str,
+        send_to_parent: SendToParent,
+        node_spec_dir: Path,
+        max_dispatch_seconds: float = 120.0,
+    ):
+        self.db = db
+        self.client = client
+        self.environment_id = environment_id
+        self.send_to_parent = send_to_parent
+        self.node_spec_dir = Path(node_spec_dir)
+        self.max_dispatch_seconds = max_dispatch_seconds
+
+    # ── Node spec loading ───────────────────────────────────────────
+
+    def _spec_path(self, node_name: str) -> Path:
+        return self.node_spec_dir / f"{node_name}.md"
+
+    def _load_node_spec(self, node_name: str) -> str:
+        path = self._spec_path(node_name)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"No node spec for {node_name!r} at {path}"
+            )
+        return path.read_text()
+
+    def _spec_hash(self, node_name: str) -> str:
+        content = self._load_node_spec(node_name)
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
