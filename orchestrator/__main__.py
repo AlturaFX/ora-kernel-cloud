@@ -15,6 +15,8 @@ from orchestrator.db import Database
 from orchestrator.agent_manager import setup as agent_setup
 from orchestrator.session_manager import SessionManager
 from orchestrator.event_consumer import EventConsumer
+from orchestrator.file_sync import FileSync
+from orchestrator.hitl import StdinHitlHandler
 from orchestrator.scheduler import KernelScheduler
 
 logging.basicConfig(
@@ -81,8 +83,21 @@ def main():
         else:
             logger.info(f"Resuming existing session: {session_mgr.session_id}")
 
+    # File sync (change-data-capture + snapshot reconciliation)
+    file_sync = FileSync(db)
+
+    # HITL handler — stdin prompt, hot-swappable for dashboard later
+    hitl = StdinHitlHandler(send_response=session_mgr.send_tool_confirmation)
+
     # Event consumer
-    consumer = EventConsumer(db=db, api_key=api_key, agent_id=agent_id, environment_id=env_id)
+    consumer = EventConsumer(
+        db=db,
+        api_key=api_key,
+        agent_id=agent_id,
+        environment_id=env_id,
+        on_hitl_needed=hitl.handle,
+        file_sync=file_sync,
+    )
 
     # Scheduler
     scheduler = KernelScheduler(api_key, session_mgr.session_id, config)
@@ -125,7 +140,14 @@ def main():
                     scheduler.stop()
                     scheduler = KernelScheduler(api_key, session_mgr.session_id, config)
                     scheduler.start()
-                    consumer = EventConsumer(db=db, api_key=api_key, agent_id=agent_id, environment_id=env_id)
+                    consumer = EventConsumer(
+                        db=db,
+                        api_key=api_key,
+                        agent_id=agent_id,
+                        environment_id=env_id,
+                        on_hitl_needed=hitl.handle,
+                        file_sync=file_sync,
+                    )
                 else:
                     logger.critical("Could not restart session. Exiting.")
                     running = False
