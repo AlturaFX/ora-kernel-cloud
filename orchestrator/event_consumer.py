@@ -15,10 +15,12 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 from anthropic import Anthropic
 
 from orchestrator.db import Database
+from orchestrator import ws_events
 
 if TYPE_CHECKING:
     from orchestrator.dispatch import DispatchManager
     from orchestrator.file_sync import FileSync
+    from orchestrator.ws_bridge import WebSocketBridge
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,7 @@ class EventConsumer:
         on_hitl_needed: Optional[Callable[[Any], None]] = None,
         file_sync: Optional["FileSync"] = None,
         dispatch_manager: Optional["DispatchManager"] = None,
+        ws_bridge: Optional["WebSocketBridge"] = None,
     ):
         self.db = db
         self.client = Anthropic(api_key=api_key)
@@ -95,6 +98,7 @@ class EventConsumer:
         self.on_hitl_needed = on_hitl_needed
         self.file_sync = file_sync
         self.dispatch_manager = dispatch_manager
+        self.ws_bridge = ws_bridge
         self.totals = SessionTotals()
 
     # ── Public API ────────────────────────────────────────────────────
@@ -169,6 +173,13 @@ class EventConsumer:
         )
         if not full_text:
             return
+        if self.ws_bridge is not None:
+            try:
+                self.ws_bridge.broadcast(
+                    ws_events.chat_response(session_id=session_id, text=full_text)
+                )
+            except Exception:
+                logger.exception("ws_bridge broadcast failed")
         if self.file_sync is not None:
             try:
                 self.file_sync.handle_snapshot_response(full_text)
@@ -195,6 +206,17 @@ class EventConsumer:
             action="TOOL_USE",
             details={"tool_name": tool_name, "input": input_preview},
         )
+        if self.ws_bridge is not None:
+            try:
+                self.ws_bridge.broadcast(
+                    ws_events.activity(
+                        session_id=session_id,
+                        action="TOOL_USE",
+                        details={"tool_name": tool_name, "input": input_preview},
+                    )
+                )
+            except Exception:
+                logger.exception("ws_bridge broadcast failed")
 
         # CDC file sync from tool_use events. Tool names are matched
         # case-insensitively: the Anthropic Managed Agent toolset emits
@@ -272,6 +294,17 @@ class EventConsumer:
             session_id=session_id,
             status="running",
         )
+        if self.ws_bridge is not None:
+            try:
+                self.ws_bridge.broadcast(
+                    ws_events.system_status(
+                        session_id=session_id,
+                        status="running",
+                        total_cost_usd=self.totals.cost_usd,
+                    )
+                )
+            except Exception:
+                logger.exception("ws_bridge broadcast failed")
 
     def _handle_status_idle(self, session_id: str, event: Any) -> None:
         stop_reason = getattr(event, "stop_reason", None)
@@ -291,6 +324,17 @@ class EventConsumer:
             action="SESSION_IDLE",
             details={"stop_reason": stop_reason_str},
         )
+        if self.ws_bridge is not None:
+            try:
+                self.ws_bridge.broadcast(
+                    ws_events.system_status(
+                        session_id=session_id,
+                        status="idle",
+                        total_cost_usd=self.totals.cost_usd,
+                    )
+                )
+            except Exception:
+                logger.exception("ws_bridge broadcast failed")
 
     @staticmethod
     def _serialize_pydantic(obj: Any) -> Any:

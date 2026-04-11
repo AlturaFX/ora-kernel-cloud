@@ -174,3 +174,81 @@ def test_dispatch_manager_is_optional():
     )
     # No dispatch_manager passed — should not raise
     consumer._handle_message("sess_parent", _message_event("plain message"))
+
+
+# ── ws_bridge routing ──────────────────────────────────────────────
+
+
+def test_message_event_broadcasts_chat_response_when_bridge_present():
+    bridge = MagicMock()
+    db = MagicMock()
+    consumer = EventConsumer(
+        db=db,
+        api_key="sk-test",
+        agent_id="agent_test",
+        environment_id="env_test",
+        ws_bridge=bridge,
+    )
+    event = _message_event("hello from kernel")
+    consumer._handle_message("sess_parent", event)
+
+    # The bridge should have been broadcast to with a CHAT_RESPONSE envelope
+    assert bridge.broadcast.called
+    # Find the CHAT_RESPONSE call (there may also be an ACTIVITY call)
+    events = [c.args[0] for c in bridge.broadcast.call_args_list]
+    chat_events = [e for e in events if e["event_type"] == "CHAT_RESPONSE"]
+    assert len(chat_events) == 1
+    assert chat_events[0]["payload"]["session_id"] == "sess_parent"
+    assert "hello from kernel" in chat_events[0]["payload"]["text"]
+
+
+def test_status_running_broadcasts_system_status():
+    bridge = MagicMock()
+    db = MagicMock()
+    consumer = EventConsumer(
+        db=db,
+        api_key="sk-test",
+        agent_id="agent_test",
+        environment_id="env_test",
+        ws_bridge=bridge,
+    )
+    event = SimpleNamespace(type="session.status_running")
+    consumer._handle_status_running("sess_parent", event)
+
+    events = [c.args[0] for c in bridge.broadcast.call_args_list]
+    status_events = [e for e in events if e["event_type"] == "SYSTEM_STATUS"]
+    assert len(status_events) == 1
+    assert status_events[0]["payload"]["status"] == "running"
+
+
+def test_tool_use_broadcasts_activity():
+    bridge = MagicMock()
+    db = MagicMock()
+    consumer = EventConsumer(
+        db=db,
+        api_key="sk-test",
+        agent_id="agent_test",
+        environment_id="env_test",
+        ws_bridge=bridge,
+    )
+    event = _write_event("/work/foo.md", "body")
+    consumer._handle_tool_use("sess_parent", event)
+
+    events = [c.args[0] for c in bridge.broadcast.call_args_list]
+    activity_events = [e for e in events if e["event_type"] == "ACTIVITY"]
+    assert len(activity_events) == 1
+    assert activity_events[0]["payload"]["action"] == "TOOL_USE"
+
+
+def test_ws_bridge_is_optional():
+    """EventConsumer with no ws_bridge must not crash on any handler."""
+    consumer = EventConsumer(
+        db=MagicMock(),
+        api_key="sk-test",
+        agent_id="agent_test",
+        environment_id="env_test",
+    )
+    consumer._handle_message("s", _message_event("hi"))
+    consumer._handle_tool_use("s", _write_event("/work/x.md", "y"))
+    consumer._handle_status_running("s", SimpleNamespace(type="session.status_running"))
+    consumer._handle_status_idle("s", SimpleNamespace(type="session.status_idle", stop_reason=None))
