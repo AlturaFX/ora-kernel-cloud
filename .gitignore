@@ -3,6 +3,9 @@
 .env.*
 *.local.json
 
+# Orchestrator per-operator state (agent/env/session IDs)
+.ora-kernel-cloud.json
+
 # Python
 __pycache__/
 *.pyc

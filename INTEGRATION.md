@@ -1,5 +1,11 @@
 # ORA Kernel — LLM Integration Guide
 
+> **Scope note.** This document applies to **base ora-kernel only** — the Claude Code TUI version that is installed into an existing project via `install.py`. It does **not** apply to ora-kernel-cloud, which runs as an always-on Managed Agent and does not get "installed" into a project in the same way. The cloud fork has its own setup flow documented in `README.md` and `docs/CLOUD_ARCHITECTURE.md`, and its runtime is architecturally distinct (no Agent tool, dispatch via fence protocol, orchestrator-brokered delegation).
+>
+> If you are working on ora-kernel-cloud, you almost certainly do not need this document. It is retained here because the `kernel-files/` directory in this repo is a faithful copy of the base ora-kernel source tree, and someone looking at a specific node spec or hook behavior may still find this integration guide useful.
+
+---
+
 This document is designed for Claude (or any LLM) to follow when integrating the ORA Kernel into an existing project. The `install.py` script handles most cases automatically, but edge cases require LLM judgment.
 
 ## When to Use This Guide

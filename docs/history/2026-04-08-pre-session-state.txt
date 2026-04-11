@@ -1,0 +1,88 @@
+● Phase 1 gave you a functional Kernel — it listens, thinks, dispatches, and persists. But for it to be useful for large or
+  long-running tasks, you need four things we haven't built yet. Let me lay them out honestly:
+
+  ---
+  What's Working Now
+
+  - Session stays alive indefinitely
+  - Cron triggers fire on schedule (heartbeat, briefing, idle-work, consolidation)
+  - You can send tasks via python -m orchestrator --send "..."
+  - Events flow to postgres in real-time
+  - Token and cost tracking
+  - CLAUDE.md loaded as system prompt — Kernel knows the 9 axioms
+  - Container has node specs, schemas, WISDOM.md (empty)
+
+  What's Missing for Real Use
+
+  1. A Way to See What the Kernel is Doing (Highest Priority)
+
+  Current state: You have to query postgres manually. The orchestrator terminal shows events but responses are truncated to
+  200 chars in logs and the terminal scrolls away.
+
+  What's needed: Either
+  - Option A (Quick): Bump TEXT_PREVIEW_LEN to 10,000 and add a simple web UI that queries postgres (a single-file Flask or
+  just a static HTML that polls). Maybe 2 hours of work.
+  - Option B (Better): The dashboard integration from Phase 2 of the spec — WebSocket bridge to your forex-ml dashboard's
+  Orchestration tab with live event streaming. This is the big payoff but 4-6 hours of work.
+
+  Without this, you're blind to what's happening — the Kernel could be doing great work or going in circles and you wouldn't
+   know.
+
+  2. HITL Approval Flow
+
+  Current state: When the Kernel needs human approval (e.g., for protected file changes, self-improvement proposals,
+  PROJECT_DNA.md autonomy triggers), it has nowhere to ask. The container is isolated from you.
+
+  What's needed: The orchestrator detects user.tool_confirmation events (already stubbed in event_consumer.py as
+  on_hitl_needed callback) and surfaces them to you — via the dashboard, a terminal prompt, or a notification. For now, even
+   a simple "print to terminal and read stdin" would work.
+
+  Without this, anything that needs approval will stall silently.
+
+  3. Long-Running Task Patterns
+
+  Current state: The Kernel can handle single-turn tasks fine ("tell me about axiom 5"). But real "large or long-running"
+  tasks need:
+
+  - Task decomposition — A goal like "research and implement a new trading indicator" needs to be split into phases. The
+  NodeDesigner/NodeCreator pattern exists but hasn't been exercised yet.
+  - Progress checkpointing — A multi-hour task should write progress to disk (or postgres) so it survives container
+  restarts.
+  - Task state tracking in orch_tasks — Right now we're only logging activity, not tracking task lifecycle (NEW → INCOMPLETE
+   → UNVERIFIED → COMPLETE). The Kernel isn't writing to orch_tasks.
+
+  What's needed: Confirm the Kernel follows the dispatch protocol from CLAUDE.md. Test it by giving it a task that should
+  naturally decompose. If it doesn't decompose, the system prompt may need reinforcement or we need a /dispatch command
+  handler that nudges it.
+
+  4. File Sync for Persistence Across Restarts
+
+  Current state: The container's filesystem is ephemeral. If the Managed Agent session terminates (timeout, error, or any
+  restart), everything the Kernel wrote — journal entries, new node specs, WISDOM updates — is lost.
+
+  What's needed: Phase 3 of the spec — the kernel_files_sync table and write-through logic. When the Kernel writes to
+  journal/WISDOM in the container, the content also lands in postgres. On restart, the bootstrap pulls it back from
+  postgres.
+
+  We have the table schema (migration 007) and db.sync_file() / db.get_synced_file() methods ready. We just haven't wired
+  them into the bootstrap or event consumer yet.
+
+  ---
+  My Recommendation: Priority Order
+
+  Most impact for least effort:
+
+  1. Increase TEXT_PREVIEW_LEN to 10,000 (5 minutes) — so you can see full responses in postgres
+  2. Simple web viewer (1 hour) — a single HTML file that polls a tiny Flask endpoint showing recent messages. Not as pretty
+   as the forex-ml dashboard integration but massively better than querying psql
+  3. HITL terminal prompt (30 minutes) — wire on_hitl_needed in event_consumer to write to a file and read a response. Basic
+   but unblocks approval-dependent work
+  4. Test task decomposition (1 hour) — send a multi-step task and see what the Kernel does. May reveal prompt tweaks needed
+  5. File sync (2 hours) — Phase 3 of the spec, persistence across restarts
+  6. Full dashboard integration (4-6 hours) — Phase 2 of the spec, the "business partner" experience
+
+  Steps 1-4 together give you a usable system in about 3 hours. You could start giving it real work that afternoon. Steps
+  5-6 make it production-grade.
+
+  Which direction feels right? If you want to start using it ASAP, I'd do steps 1-4 in order. If you want the polished
+  experience first, we jump to the dashboard integration.

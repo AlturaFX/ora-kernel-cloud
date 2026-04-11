@@ -1,98 +1,115 @@
-# ORA Kernel
+# ORA Kernel Cloud
 
-A self-expanding agentic orchestration system for Claude Code. Turn Claude into a proactive business partner that dispatches specialized agents, verifies every work product, learns from its own performance, and works on your project while you're away — all governed by a 9-axiom Constitution enforced through programmatic hooks.
+An always-on agentic orchestration system for software engineering work. The ORA Kernel runs as an Anthropic **Managed Agent** in the cloud; a thin Python orchestrator on your machine owns the event stream, runs approvals, persists state to PostgreSQL, and — since the Managed Agent toolset has no built-in subagent dispatch — brokers delegation to focused sub-agent sessions on your behalf.
 
-## Why ORA?
+This is a **separate fork** of [ora-kernel](https://github.com/AlturaFX/ora-kernel). The base ora-kernel runs inside a Claude Code TUI and uses Claude Code's `Agent` tool to dispatch subagents. ora-kernel-cloud runs in Anthropic's cloud, has no Agent tool, and has a fundamentally different runtime. If you want the TUI-based version, use base ora-kernel.
 
-When you use Claude Code for complex, multi-step projects, you face real problems:
+## Why a Cloud Fork?
 
-- **No verification** — the agent that wrote the code also judges if it's correct (self-certification)
-- **Infinite loops** — failed approaches get retried without analysis
-- **No state tracking** — task progress, metrics, and history are lost between sessions
-- **No safety rails** — nothing prevents accidental deletion of critical files or runaway retries
-- **No improvement** — the same prompt weaknesses cause the same failures repeatedly
+The base ora-kernel needs a Claude Code TUI to be open. The Kernel dies when you close the terminal. Autonomous features (heartbeat, morning briefing, overnight research) only run while the TUI is active. For real "business-partner-that-works-while-you-sleep" behavior, the Kernel needs to live somewhere else.
 
-ORA solves these by treating Claude as an **orchestrator, not a worker**. It dispatches specialized subagents for execution, requires separate verification for every work product, tracks everything in PostgreSQL, and automatically proposes system improvements based on performance data.
+**Managed Agents solve that** — an Anthropic-hosted, always-on cloud session that accepts events via API and emits events via SSE. But they come with one big catch: the toolset (`agent_toolset_20260401`) gives the agent `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_search`, `web_fetch` — **and nothing else**. There is no Agent/Task/dispatch primitive. The base ora-kernel's entire orchestration model assumes the Agent tool exists.
 
-This is **not a chat interface** — it's a workflow orchestration engine with constitutional guardrails.
+ora-kernel-cloud reconstructs delegation at the orchestrator layer. The Kernel signals dispatch intent by emitting structured `` ```DISPATCH `` fenced blocks in its responses. The orchestrator parses them, spins up a focused Managed Agent sub-session per dispatch (with the node's spec as the sub-agent's system prompt), consumes its event stream, and forwards the result back to the parent session. Each "subagent" is a first-class cloud session. Axioms 2 (objective verification) and 9 (separation of concerns) are preserved because verifiers really are separate agents.
 
-## Terminology
+See `docs/CLOUD_ARCHITECTURE.md` for the full architectural writeup — that document is the source of truth.
 
-| Term | Meaning |
-|------|---------|
-| **Kernel** | The main Claude Code agent. Orchestrates work, enforces the Constitution, dispatches nodes. |
-| **Node** | A markdown spec file defining a specialized subagent's system prompt, input/output contracts, and constraints. |
-| **Subagent** | A Claude Code Agent tool invocation dispatched by the Kernel to execute a node's prompt. |
-| **Quad** | A set of 4 nodes: Domain (planner) + Task (executor) + Domain Verifier + Task Verifier. |
-| **Constitution** | 9 immutable axioms that govern all system behavior. Enforced by hooks. |
-| **HITL** | Human-in-the-loop. The system pauses for human approval when required by the Constitution. |
+## Status
 
-## What It Does
-
-**Orchestration**
-- Decomposes complex tasks into subtasks, dispatches specialized subagents, and verifies every result through a separate verifier
-- Tracks the full task lifecycle (NEW → INCOMPLETE → UNVERIFIED → COMPLETE) in PostgreSQL
-
-**Safety & Enforcement**
-- Hooks block dangerous commands, prevent infinite retry loops, protect core files, and throttle polling
-- 9 immutable axioms enforced programmatically — the model can't bypass them
-
-**Proactive Intelligence**
-- Morning briefings with priority suggestions based on project state
-- Anomaly detection that alerts on stuck tasks, budget exhaustion, and failure spikes
-- Context-aware follow-up suggestions that learn from your feedback
-- Autonomous research on low-risk tasks during off-hours
-
-**Learning & Memory**
-- Self-improvement cycle analyzes metrics and proposes prompt/parameter changes (always HITL-approved)
-- Daily journal entries capture operational patterns and decisions
-- Wisdom consolidation ("dreaming") promotes scored insights into persistent memory across sessions
-- OpenTelemetry pipeline for token usage and cost tracking
+| Component | State |
+|---|---|
+| Parent session lifecycle (create/resume/restart) | **Done** |
+| SSE event consumer (tokens, costs, activity log) | **Done** |
+| Stdin HITL handler | **Done** |
+| Scheduler (`/heartbeat`, `/briefing`, `/idle-work`, `/consolidate`, `/sync-snapshot`) | **Done** |
+| File sync (Write/Edit CDC + SYNC fence snapshot reconciliation) | **Done** |
+| Dispatch subsystem (DISPATCH fence parser, per-node agent cache, sub-session lifecycle, result forwarding) | **Done** |
+| Protocol refresh on session resume (no drift between orchestrator and Kernel) | **Done** |
+| Live smoke-tested end-to-end | **Done** (2026-04-10) |
+| Dashboard integration (WebSocket bridge, Cytoscape task graph, HITL widget swap) | **Pending** |
+| Parallel dispatch via thread pool | **Backlog** |
+| Dispatch idempotency on orchestrator restart | **Backlog** |
+| Cost rollup across parent + sub-sessions | **Backlog** |
 
 ## Quick Start
 
-### New Project
+### Prerequisites
+
+- Python 3.10+
+- PostgreSQL 14+ with a database named `ora_kernel` (Unix socket or TCP, both work)
+- An Anthropic API key with Managed Agents beta access
+- The base [ora-kernel](https://github.com/AlturaFX/ora-kernel) repo cloned somewhere the container can reach (typically just `github.com/AlturaFX/ora-kernel.git` — the bootstrap clones it inside the container)
+
+### Setup
 
 ```bash
-python3 ora-kernel/install.py /path/to/your/project
+# 1. Clone this repo
+git clone https://github.com/AlturaFX/ora-kernel-cloud.git
+cd ora-kernel-cloud
+
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. Configure credentials
+cat > .env <<'EOF'
+ANTHROPIC_API_KEY=sk-ant-your-key-here
+POSTGRES_DSN=postgresql:///ora_kernel
+EOF
+chmod 600 .env
+
+# 4. Apply the database schema
+createdb ora_kernel
+for f in kernel-files/infrastructure/db/*.sql; do
+  psql -d ora_kernel -f "$f"
+done
+
+# 5. Launch the orchestrator
+python3 -m orchestrator
 ```
 
-### Existing Project (with its own CLAUDE.md, hooks, etc.)
+On first run the orchestrator will create the Managed Agent, create a shared environment, create a session, and send the bootstrap prompt. On subsequent runs it resumes the existing session (IDs are persisted in `.ora-kernel-cloud.json`).
+
+### Sending Tasks
 
 ```bash
-# Preview what would change
-python3 ora-kernel/install.py /path/to/your/project --dry-run
+# Send an ad-hoc message to the active session
+python3 -m orchestrator --send "Please summarize recent activity"
 
-# Install with merge
-python3 ora-kernel/install.py /path/to/your/project
+# Trigger a specific scheduled job manually (just send the command as a message)
+python3 -m orchestrator --send "/briefing"
+python3 -m orchestrator --send "/sync-snapshot"
 ```
 
-### After Installation
+The orchestrator must be running (or restarted) to consume the response — send commands land as `user.message` events on the parent session and are processed on the next event loop iteration.
 
-1. Fill in `PROJECT_DNA.md` with your project's mission and constraints
-2. Start PostgreSQL and run migrations:
-   ```bash
-   createdb ora_kernel
-   for f in infrastructure/ora-kernel/db/*.sql; do psql -d ora_kernel -f "$f"; done
-   ```
-3. Restart Claude Code from your project root
-4. Run `/kernel-listen` to start the Kernel event loop
-5. Push the inotifywait command to background, then use the TUI normally
+### Watching What It's Doing
 
-## Architecture
+All events land in PostgreSQL in real time. Until the dashboard integration ships (Task 21), querying `psql` directly is the authoritative way to watch:
 
-```
-You (TUI) ←→ Claude Code (Kernel)
-                 ├── Subagents (nodes) — dispatched via Agent tool
-                 ├── Hooks — safety, loop detection, lifecycle tracking
-                 ├── PostgreSQL — task state, metrics, activity log
-                 ├── Events/inbox — cron triggers, webhooks, subagent completion
-                 ├── Proactive layer — heartbeat, briefings, suggestions, idle work
-                 ├── Memory — journal entries + WISDOM.md (scored consolidation)
-                 └── Constitution (9 Axioms) — immutable rules enforced by hooks
+```bash
+# Recent messages (full text, no 200-char truncation)
+psql -d ora_kernel -c "SELECT id, substring(details->>'text' from 1 for 300) FROM orch_activity_log WHERE action='MESSAGE' ORDER BY id DESC LIMIT 5;"
+
+# Recent dispatches with costs
+psql -d ora_kernel -c "SELECT node_name, status, input_tokens, output_tokens, cost_usd, duration_ms FROM dispatch_sessions ORDER BY started_at DESC LIMIT 10;"
+
+# File sync state (WISDOM.md + journal)
+psql -d ora_kernel -c "SELECT file_path, synced_from, length(content), updated_at FROM kernel_files_sync ORDER BY updated_at DESC;"
+
+# Running cost for the active parent session
+psql -d ora_kernel -c "SELECT status, total_input_tokens, total_output_tokens, total_cost_usd FROM cloud_sessions ORDER BY created_at DESC LIMIT 1;"
+
+# Total cost of a task including sub-sessions (parent + dispatches)
+psql -d ora_kernel -c "
+SELECT
+  (SELECT total_cost_usd FROM cloud_sessions WHERE session_id = 'sesn_xxx') AS parent_cost,
+  (SELECT COALESCE(SUM(cost_usd), 0) FROM dispatch_sessions WHERE parent_session_id = 'sesn_xxx') AS dispatch_cost;
+"
 ```
 
 ## The 9 Axioms
+
+Unchanged from base ora-kernel — these are the immutable constitution the Kernel operates under:
 
 1. **Observable State** — record and broadcast every state change
 2. **Objective Verification** — no self-certification; separate verifier for every work product
@@ -104,133 +121,85 @@ You (TUI) ←→ Claude Code (Kernel)
 8. **First Principles** — decompose complex/failed tasks to fundamentals before acting
 9. **Separation of Concerns** — no single agent plans AND executes AND verifies
 
-## File Structure
+In ora-kernel-cloud, **Axioms 2 and 9 are enforced by the dispatch subsystem** — the orchestrator never routes a task node and its verifier to the same sub-session. The Kernel is responsible for dispatching the verifier as a separate `DISPATCH` fence.
+
+## Repository Layout
 
 ```
-your-project/
-├── CLAUDE.md                     # Kernel instructions (merged with your existing)
-├── PROJECT_DNA.md                # Your project's mission config
-├── .claude/
-│   ├── settings.json             # Hooks + permissions (merged)
-│   ├── agents.yaml               # Node/command registry (merged)
-│   ├── hooks/                    # 6 enforcement scripts
-│   ├── commands/                 # kernel-listen, self-improve
-│   ├── cron/                     # heartbeat and scheduled triggers
-│   ├── events/                   # inbox queue + pending briefing
-│   └── kernel/
-│       ├── schemas/              # NodeOutput, NodeSpec, SplitSpec
-│       ├── nodes/                # System + self-improvement node specs
-│       ├── references/           # Constitution, priorities, examples
-│       └── journal/              # Daily entries + WISDOM.md (operational memory)
-└── infrastructure/ora-kernel/
-    ├── docker-compose.yml        # PostgreSQL + OTel collector
-    ├── db/                       # SQL migrations
-    └── otel/                     # Collector config
+ora-kernel-cloud/
+├── orchestrator/                        # The thin daemon
+│   ├── __main__.py                      # Entry: `python3 -m orchestrator`
+│   ├── agent_manager.py                 # Agent + environment CRUD
+│   ├── session_manager.py               # Session lifecycle + BOOTSTRAP_PROMPT +
+│   │                                    #   SYNC_SNAPSHOT_PROTOCOL + DISPATCH_PROTOCOL
+│   ├── event_consumer.py                # SSE loop + event routing
+│   ├── file_sync.py                     # CDC + snapshot reconciliation
+│   ├── dispatch.py                      # DISPATCH fence -> sub-session broker
+│   ├── hitl.py                          # Stdin-based HITL handler
+│   ├── scheduler.py                     # APScheduler (5 triggers)
+│   ├── db.py                            # psycopg2 wrapper
+│   ├── config.py                        # .env + config.yaml loader
+│   └── tests/                           # 72 unit + integration tests
+├── kernel-files/                        # What the Kernel clones into /work
+│   ├── CLAUDE.md                        # Kernel constitution (protected)
+│   ├── PROJECT_DNA.md                   # Mission config (protected)
+│   ├── .claude/
+│   │   ├── kernel/
+│   │   │   ├── nodes/system/            # Bootstrap node specs + smoke_test_node
+│   │   │   ├── references/constitution.md
+│   │   │   └── schemas/
+│   │   └── hooks/                       # safety_check, protect_core, etc.
+│   └── infrastructure/db/               # SQL migrations 001-008
+├── docs/
+│   ├── CLOUD_ARCHITECTURE.md            # Source of architectural truth
+│   ├── API_KEY_SETUP.md                 # Credential handling
+│   ├── next_steps.md                    # Current backlog
+│   ├── specs/SPEC-001-managed-agent-cloud-fork.md
+│   └── superpowers/plans/               # Executed implementation plans
+├── spikes/
+│   ├── subagent_feasibility.py          # Validated Option 3 dispatch model
+│   └── check_sub_session.py             # Diagnostic helper for stuck sub-sessions
+├── config.yaml                          # Scheduler + postgres defaults
+├── requirements.txt
+└── .env                                 # gitignored — your API key goes here
 ```
 
-## Creating Custom Nodes
-
-The system self-expands when it encounters a task that no existing node can handle:
-
-1. The Kernel detects no matching node in `.claude/kernel/nodes/`
-2. It dispatches the **NodeDesigner** to analyze the gap and produce a spec
-3. The spec is verified, then **NodeCreator** generates the markdown files
-4. You approve the new node (HITL gate), and it's immediately available
-
-To create a node manually, follow the template in `.claude/kernel/schemas/node_spec.md`. Every worker node needs a paired verifier.
-
-## Triggering Tasks via the Event Queue
-
-Write JSON to `.claude/events/inbox.jsonl` to trigger the Kernel:
+## Testing
 
 ```bash
-# Dispatch a task
-echo '{"id":"task_001","content":"/dispatch {\"goal\":\"Analyze the README for clarity\"}"}' >> .claude/events/inbox.jsonl
+# Full unit + integration suite (72 tests, requires local postgres for the
+# db_dispatch integration tests — they auto-skip if postgres is unreachable)
+python3 -m pytest orchestrator/tests/
 
-# Trigger self-improvement
-echo '{"id":"improve_001","content":"/self-improve"}' >> .claude/events/inbox.jsonl
+# Dispatch subsystem only
+python3 -m pytest orchestrator/tests/test_dispatch.py -v
 
-# Send a plain-text task
-echo '{"id":"msg_001","content":"Write unit tests for the auth module"}' >> .claude/events/inbox.jsonl
+# Live dispatch smoke test (requires running orchestrator and API access)
+python3 -m orchestrator --send "Dispatch the smoke_test_node with any task payload."
 ```
 
-The Kernel reads these when running `/kernel-listen` in the background.
+## Cost
 
-## Proactive Features
+Rough envelope at April 2026 Opus-4.6 rates ($5/M input, $25/M output) with a mixed workload:
 
-These features make the Kernel feel like a business partner — it monitors the project, surfaces issues before you ask, suggests next steps, works during downtime, and remembers what it learned.
+| Usage level | Monthly cost |
+|---|---|
+| Light (few /heartbeat days, occasional /briefing) | $30–80 |
+| Heavy with full dispatch Quads on real tasks | $100–250 |
 
-### Heartbeat (Anomaly Detection)
+See `docs/API_KEY_SETUP.md` for the breakdown and `docs/CLOUD_ARCHITECTURE.md` § Cost Model for per-action numbers from the 2026-04-10 spike.
 
-A cron-based health check that stays silent when everything is healthy:
+## Contributing
 
-```bash
-crontab -e
-# Every 2 hours during work hours
-0 8-18/2 * * 1-5 /path/to/project/.claude/cron/heartbeat.sh /path/to/project
-```
-
-Checks for: stuck tasks, retry budgets near exhaustion, node failure rate spikes, orphaned subagents. Only surfaces issues that need attention.
-
-### Daily Briefing
-
-A morning summary of project status with suggested priorities:
-
-```bash
-crontab -e
-# Every weekday at 8am
-0 8 * * 1-5 /path/to/project/.claude/cron/daily_briefing.sh /path/to/project
-```
-
-Covers: yesterday's completions and failures, pending work ranked by priority, system health, self-improvement cycle status. Written to `pending_briefing.md` and presented when you next open the TUI.
-
-### Context-Aware Suggestions
-
-After a task completes, the Kernel may offer a follow-up suggestion — an unblocked downstream task, a definition-of-done gap, or a logical next step based on patterns. It asks "Was this helpful?" and records your feedback. Over time, it learns which types of suggestions you value and suppresses the ones you don't. No cron needed — this triggers automatically on task completion.
-
-### Anticipatory Research (Idle Work)
-
-During off-hours, the Kernel picks up low-risk queued tasks and works on them autonomously:
-
-```bash
-crontab -e
-# Every 4 hours overnight
-0 20,0,4 * * * /path/to/project/.claude/cron/idle_work.sh /path/to/project
-```
-
-Only small (budget_size S), research/analysis tasks are eligible. Gated by `PROJECT_DNA.md` autonomy_level — the Kernel never exceeds the boundaries you set. Results appear as "While you were away..." when you return.
-
-### Learning Journal & Wisdom Consolidation
-
-The Kernel maintains operational memory across sessions:
-
-- **Journal entries** (`.claude/kernel/journal/YYYY-MM-DD.md`) record what happened each session — completions, failures, decisions, patterns
-- **WISDOM.md** accumulates scored insights promoted from journal entries via a "dreaming" consolidation cycle
-- Consolidation scores candidates by **frequency** (how often observed), **impact** (did it affect outcomes), and **recency** (still relevant)
-- Stale insights that aren't reinforced are eventually archived, keeping WISDOM.md current
-
-```bash
-crontab -e
-# Weekly consolidation on Sunday at 3am
-0 3 * * 0 /path/to/project/.claude/cron/consolidate.sh /path/to/project
-```
-
-Also triggers automatically after each self-improvement cycle. WISDOM.md is loaded at the start of every session, giving the Kernel cumulative project knowledge.
-
-## Requirements
-
-- Claude Code 2.1.89+
-- Python 3.8+ (for hooks and installer)
-- PostgreSQL 14+ (for state management)
-- `inotifywait` (from `inotify-tools` package) for the event loop
-- Docker (optional, for OTel collector)
+This fork is active development. See `CONTRIBUTING.md` (which now has a cloud-specific section) for how to test and submit changes. The authoritative planning documents are in `docs/superpowers/plans/`.
 
 ## License
 
-Business Source License 1.1 (BSL)
+Business Source License 1.1 — same as base ora-kernel. Free for personal, educational, research, and internal business use. Converts to Apache 2.0 on 2030-04-06. See `LICENSE`.
 
-- Free for personal, educational, research, and internal business use
-- Cannot be repackaged or resold as a commercial product or service
-- Converts to Apache 2.0 on 2030-04-06 (4 years from initial release)
+## References
 
-See [LICENSE](LICENSE) for full terms.
+- Base ora-kernel: https://github.com/AlturaFX/ora-kernel
+- Architecture: `docs/CLOUD_ARCHITECTURE.md`
+- Constitution: `kernel-files/.claude/kernel/references/constitution.md`
+- Anthropic Managed Agents docs: (see your account's beta access docs)

@@ -1,10 +1,25 @@
 # SPEC-001: ORA Kernel Cloud — Managed Agent Fork
 
-**Status**: Draft
+**Status**: Partially implemented — see Implementation Status below. Source of truth for the runtime architecture is now `docs/CLOUD_ARCHITECTURE.md`. This spec is retained as a historical record of the original plan and as a register of unimplemented acceptance criteria.
 **Created**: 2026-04-08
+**Last updated**: 2026-04-10
 **Author**: AlturaFX + Claude Opus 4.6
 **Source**: docs/CLOUD_ARCHITECTURE.md
-**Repo**: New fork — `ora-kernel-cloud`
+**Repo**: `ora-kernel-cloud`
+
+---
+
+## Implementation Status (2026-04-10)
+
+| Phase | Status |
+|---|---|
+| Phase 1 — Thin Orchestrator (MVP) | ✅ Complete |
+| **Phase 2.5 — Dispatch Subsystem** (not in original spec, added 2026-04-10) | ✅ Complete |
+| Phase 3 — File Sync | ✅ Complete (CDC + snapshot reconciliation, not the originally-envisioned write-through) |
+| Phase 2 — Dashboard Integration | ⏸ Pending (Tasks 21 + 22 in the in-session task list) |
+| Phase 4 — Hybrid Mode (local TUI + cloud) | 🗂 Deferred (not an MVP priority) |
+
+**What changed from the original spec:** During live diagnostic testing on 2026-04-10, we discovered that the Anthropic Managed Agent toolset (`agent_toolset_20260401`) does NOT expose an Agent/Task/subagent-dispatch tool — only `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_search`, `web_fetch`. This invalidated the base ora-kernel's dispatch model in the cloud. **Phase 2.5 — the dispatch subsystem — was added as a response**: the orchestrator became a dispatch broker, and the Kernel signals delegation via structured `` ```DISPATCH `` fenced blocks. This is architecturally significant and documented in `docs/CLOUD_ARCHITECTURE.md` § The Core Constraint.
 
 ---
 
@@ -18,14 +33,15 @@ The base ORA Kernel requires a Claude Code TUI session to be running. The Kernel
 
 ### Success Criteria
 
-- [ ] A Managed Agent session stays alive indefinitely without a TUI
-- [ ] Cron triggers (heartbeat, briefing, idle work, consolidation) are sent via API
-- [ ] SSE events are consumed and written to PostgreSQL in real-time
-- [ ] Token costs are tracked per-session with running totals
-- [ ] HITL approvals work via the dashboard
-- [ ] The dashboard's Orchestration tab shows live Managed Agent activity
-- [ ] WISDOM.md and journal entries survive container restarts
-- [ ] A local Claude Code TUI can share the same postgres state (hybrid mode)
+- [x] A Managed Agent session stays alive indefinitely without a TUI
+- [x] Cron triggers (heartbeat, briefing, idle work, consolidation) are sent via API — plus new `/sync-snapshot` trigger added for file-sync reconciliation
+- [x] SSE events are consumed and written to PostgreSQL in real-time
+- [x] Token costs are tracked per-session with running totals
+- [x] HITL approvals work — via stdin for the MVP (dashboard handler is Phase 2)
+- [ ] The dashboard's Orchestration tab shows live Managed Agent activity — **Phase 2 pending**
+- [x] WISDOM.md and journal entries survive container restarts — via CDC + snapshot reconciliation rather than the originally-envisioned write-through
+- [ ] A local Claude Code TUI can share the same postgres state (hybrid mode) — **deferred, not an MVP priority**
+- [x] *(Added 2026-04-10)* Kernel can dispatch work to focused sub-agents despite the missing Agent tool — via the Phase 2.5 dispatch subsystem
 
 ---
 
@@ -222,6 +238,55 @@ Connection string passed via bootstrap event or environment variable.
 - Graceful shutdown on SIGTERM/SIGINT
 - Acceptance: single command starts everything, Ctrl+C shuts down cleanly
 
+### Phase 2.5: Dispatch Subsystem (added 2026-04-10)
+
+**Context**: The Managed Agent toolset has no Agent/Task tool. Without this phase, Axioms 2 and 9 cannot be enforced and the base ora-kernel's orchestration model is aspirational in the cloud. See `docs/CLOUD_ARCHITECTURE.md` § DispatchManager for the full design.
+
+**Task 2.5.1: Feasibility spike** ✅
+- Validate that creating a second Managed Agent session from the orchestrator is cheap and fast
+- Acceptance: `spikes/subagent_feasibility.py` runs, returns real latency/cost numbers
+- Result: ~0.3s agent.create, ~0.4s session.create, ~4.8s trivial roundtrip, ~$0.00014 per trivial call
+
+**Task 2.5.2: Dispatch DB tables** ✅
+- Migration `008_dispatch.sql` creates `dispatch_agents` (per-node cache with prompt hash) and `dispatch_sessions` (per-dispatch lifecycle)
+- Acceptance: migration applies cleanly, `db.py` has CRUD helpers, integration tests pass
+
+**Task 2.5.3: Fence parser** ✅
+- `parse_dispatch_fences` — extracts `(node_name, payload_dict)` pairs from `` ```DISPATCH `` fenced blocks in agent messages
+- Skips malformed fences (missing node attribute, invalid JSON, non-object payload)
+- Acceptance: unit tests cover all valid + invalid shapes
+
+**Task 2.5.4: Per-node agent cache** ✅
+- `DispatchManager._ensure_agent` — look up cached agent by node name + prompt hash; create fresh if missing or stale
+- Acceptance: spec edits trigger rebuild, unchanged specs hit cache
+
+**Task 2.5.5: Sub-session lifecycle** ✅
+- `DispatchManager._run_sub_session` — creates session, sends task, streams events, records lifecycle
+- Stall watchdog via `httpx.Timeout(read=...)`; wall-clock ceiling via `max_dispatch_seconds`
+- Handles `session.status_terminated` as failure; records `CDC_MISSING_BASE` / `CDC_DIVERGENCE` equivalents as `orch_activity_log` rows
+- Acceptance: unit tests + live smoke test with `smoke_test_node` complete in ~7s
+
+**Task 2.5.6: Top-level routing + result forwarding** ✅
+- `DispatchManager.handle_message` — processes all fences in a message, catches per-dispatch exceptions, forwards results via `send_to_parent` callback
+- `_format_result_fence` — renders results as `` ```DISPATCH_RESULT `` fenced blocks the Kernel parses
+- Acceptance: unit tests cover success, missing node, no-fence, and continue-after-failure cases
+
+**Task 2.5.7: Protocol teaching** ✅
+- `DISPATCH_PROTOCOL` constant in `session_manager.py`
+- Embedded in `BOOTSTRAP_PROMPT` for fresh sessions
+- `SessionManager.send_protocol_refresh()` re-teaches both SYNC and DISPATCH protocols on every orchestrator boot against a resumed session
+- Acceptance: fresh session works via bootstrap; resumed session works via refresh (verified live on 2026-04-10)
+
+**Task 2.5.8: Event consumer wiring** ✅
+- `EventConsumer._handle_message` routes DISPATCH fences to `DispatchManager.handle_message` (same pattern as SYNC fences → `FileSync`)
+- Both routes fire on every message; exceptions are caught and logged so one handler can never wedge the SSE loop
+- Acceptance: integration tests + live smoke test
+
+**Task 2.5.9: Main entry point wiring** ✅
+- `__main__.py` constructs `DispatchManager` pointing at `kernel-files/.claude/kernel/nodes/system/`, with a dedicated `Anthropic` client for sub-session calls
+- `send_to_parent` is a thin lambda over `session_mgr.send_message`
+- On resume, calls `send_protocol_refresh` after logging the resume
+
 ### Phase 2: Dashboard Integration
 
 **Task 2.1: WebSocket bridge**
@@ -249,23 +314,35 @@ Connection string passed via bootstrap event or environment variable.
 - Forward responses via WebSocket → orchestrator → API
 - Acceptance: can approve/deny from dashboard, agent proceeds
 
-### Phase 3: File Sync
+### Phase 3: File Sync ✅
 
-**Task 3.1: Postgres file sync tables**
-- Migration `007_file_sync.sql` for `kernel_files_sync` and `cloud_sessions` tables
-- Acceptance: tables created, basic CRUD works
+Implemented with a different mechanism than originally envisioned. The original "journal/WISDOM write-through via psql from the container" was ruled out by Invariant 1 (container never speaks to postgres). Instead, file sync runs entirely orchestrator-side via two complementary paths: CDC from `agent.tool_use` events, and snapshot reconciliation via the SYNC fence protocol. See `docs/CLOUD_ARCHITECTURE.md` § FileSync.
 
-**Task 3.2: Bootstrap with file hydration**
-- Bootstrap event pulls WISDOM.md and recent journal entries from postgres before starting work
-- Acceptance: fresh container has accumulated wisdom
+**Task 3.1: Postgres file sync tables** ✅
+- Migration `007_cloud_sessions.sql` creates `kernel_files_sync` + `cloud_sessions`
+- Acceptance met
 
-**Task 3.3: Journal/WISDOM write-through**
-- When agent writes journal or WISDOM in container, also write to postgres via psql
-- Acceptance: journal entries survive container restart
+**Task 3.2: Bootstrap with file hydration** ✅
+- `SessionManager._build_hydration_instructions` pulls WISDOM.md and recent journal entries from `kernel_files_sync` and injects them into `BOOTSTRAP_PROMPT`
+- Acceptance met
 
-**Task 3.4: Node spec git flow**
-- New node specs (from self-expansion) committed to git from container
-- Acceptance: NodeCreator output persists in repo
+**Task 3.3: CDC write capture** ✅ *(replaces the original "write-through via psql")*
+- `FileSync.handle_write` captures full content from Write tool_use events
+- `FileSync.handle_edit` applies Edit diffs server-side against cached content
+- Divergences logged as observable `orch_activity_log` rows
+- Tracked paths: `.claude/kernel/journal/**/*.md`, `.claude/kernel/nodes/**/*.md`
+- Acceptance: round-trip verified live 2026-04-10 (CDC write captured, row visible in `kernel_files_sync` with `synced_from='cdc'`)
+
+**Task 3.4: SYNC fence snapshot reconciliation** ✅ *(new, not in original spec)*
+- `SYNC_SNAPSHOT_PROTOCOL` constant taught to Kernel via bootstrap + scheduler trigger
+- `FileSync.handle_snapshot_response` parses `` ```SYNC path=... ``` `` fences and writes with `synced_from='snapshot'`
+- Backstop for anything CDC missed (bash-based writes, Edit divergences)
+- Acceptance: verified live 2026-04-10 (snapshot row landed with correct content)
+
+**Task 3.5 (deferred): Node spec git flow**
+- New node specs from self-expansion committed to git from the container
+- Status: not yet needed — the dispatch subsystem made self-expansion work again, but we have not exercised NodeDesigner → NodeCreator end-to-end yet
+- Acceptance criteria preserved for future work
 
 ### Phase 4: Hybrid Mode
 
@@ -320,23 +397,30 @@ playwright-cli snapshot  # Verify Orchestration tab shows Managed Agent node
 
 ## Files to Create
 
-### New (in ora-kernel-cloud fork)
+### New (in ora-kernel-cloud fork) — as actually built
 
-| File | Purpose |
-|---|---|
-| `orchestrator/__init__.py` | Package init |
-| `orchestrator/__main__.py` | Entry point (`python -m orchestrator`) |
-| `orchestrator/main.py` | Ties all components together |
-| `orchestrator/agent_manager.py` | Agent + environment CRUD |
-| `orchestrator/session_manager.py` | Session lifecycle + bootstrap |
-| `orchestrator/event_consumer.py` | SSE stream → postgres + forwarding |
-| `orchestrator/scheduler.py` | Cron trigger scheduling |
-| `orchestrator/ws_bridge.py` | WebSocket bridge to dashboard |
-| `orchestrator/config.py` | Configuration loading |
-| `orchestrator/db.py` | PostgreSQL connection helpers |
-| `config.yaml` | Orchestrator configuration (schedules, ports, postgres DSN) |
-| `requirements.txt` | `anthropic`, `psycopg2-binary`, `apscheduler`, `websockets` |
-| `infrastructure/db/007_cloud_sessions.sql` | Cloud session + file sync tables |
+| File | Purpose | Status |
+|---|---|---|
+| `orchestrator/__init__.py` | Package init | ✅ |
+| `orchestrator/__main__.py` | Entry point (`python -m orchestrator`); constructs + wires FileSync, DispatchManager, StdinHitlHandler, EventConsumer, KernelScheduler | ✅ |
+| `orchestrator/agent_manager.py` | Agent + environment CRUD | ✅ |
+| `orchestrator/session_manager.py` | Session lifecycle + bootstrap; authoritative source for `SYNC_SNAPSHOT_PROTOCOL` and `DISPATCH_PROTOCOL`; `send_protocol_refresh` for resume drift closure | ✅ |
+| `orchestrator/event_consumer.py` | SSE stream handler; routes events to FileSync, DispatchManager, HITL | ✅ |
+| `orchestrator/scheduler.py` | APScheduler trigger dispatcher (`/heartbeat`, `/briefing`, `/idle-work`, `/consolidate`, `/sync-snapshot`) | ✅ |
+| `orchestrator/file_sync.py` | CDC + snapshot reconciliation for operational-memory files | ✅ |
+| `orchestrator/dispatch.py` | DISPATCH fence parser + DispatchManager sub-session broker | ✅ |
+| `orchestrator/hitl.py` | Stdin-based HITL handler (Phase 2 will swap for WebSocket) | ✅ |
+| `orchestrator/config.py` | `.env` + `config.yaml` loader | ✅ |
+| `orchestrator/db.py` | psycopg2 wrapper + CDC/dispatch helpers | ✅ |
+| `config.yaml` | Scheduler + postgres defaults | ✅ |
+| `requirements.txt` | `anthropic`, `psycopg2-binary`, `apscheduler`, `websockets`, `python-dotenv`, `pytest` | ✅ |
+| `kernel-files/infrastructure/db/007_cloud_sessions.sql` | `cloud_sessions` + `kernel_files_sync` | ✅ |
+| `kernel-files/infrastructure/db/008_dispatch.sql` | `dispatch_agents` + `dispatch_sessions` | ✅ *(added for Phase 2.5)* |
+| `kernel-files/.claude/kernel/nodes/system/smoke_test_node.md` | Minimal node spec for dispatch pipeline validation | ✅ *(added for Phase 2.5)* |
+| `spikes/subagent_feasibility.py` | Option 3 feasibility spike | ✅ *(added for Phase 2.5)* |
+| `spikes/check_sub_session.py` | Diagnostic for stuck sub-sessions | ✅ *(added for Phase 2.5)* |
+| `orchestrator/ws_bridge.py` | WebSocket bridge to dashboard | ⏸ *(Phase 2 — not yet built)* |
+| ~~`orchestrator/main.py`~~ | *(Originally planned; replaced by `__main__.py` pattern)* | — |
 
 ### Modified (from base ora-kernel)
 
@@ -367,12 +451,27 @@ playwright-cli snapshot  # Verify Orchestration tab shows Managed Agent node
 
 4. **Postgres connectivity from container** — The container needs network access to your postgres. If postgres is local (not cloud-hosted), you'd need a tunnel or public endpoint. Mitigation: document this requirement clearly; suggest cloud postgres (Supabase, Railway, Neon) as an option.
 
-### Open Questions
+### Open Questions — Resolutions
 
-1. **Environment variable injection** — Can we pass POSTGRES_DSN as an env var to the container, or does the agent need to discover it from the system prompt?
-2. **Agent versioning** — When we update CLAUDE.md, do we create a new agent version or update the existing one? (API supports versioning)
-3. **Multi-project** — If the user runs ORA Kernel Cloud on two projects, do they share one agent with two environments, or two separate agents?
-4. **Dashboard deployment** — Is the forex-ml dashboard accessible from the cloud container for HITL, or does HITL always flow through the orchestrator?
+1. **Environment variable injection for POSTGRES_DSN** — **Moot.** Invariant 1 of the cloud architecture is that the container never speaks directly to postgres. All state flows through the orchestrator via the SSE event stream. The container never needs a DSN.
+
+2. **Agent versioning on CLAUDE.md updates** — **Not a concern for the parent Kernel.** The parent agent's system prompt is `kernel-files/CLAUDE.md`, which is loaded by `agent_manager.ensure_agent` at orchestrator startup; edits to CLAUDE.md don't take effect until the next orchestrator boot. Protocol changes are delivered via `BOOTSTRAP_PROMPT` and `send_protocol_refresh`, which are updated on every startup regardless. For per-node agents in the dispatch subsystem, the `prompt_hash` column on `dispatch_agents` forces a fresh agent creation when the node spec content changes.
+
+3. **Multi-project** — **Single-project for the MVP.** The orchestrator's state (`.ora-kernel-cloud.json`, the shared environment ID, the cached agent IDs) is all scoped to a single project directory. Running two projects means running two orchestrators with two separate state files. A multi-project extension is a backlog item, not an architectural blocker.
+
+4. **Dashboard deployment** — **Cloud container cannot talk to the dashboard directly.** HITL always flows through the orchestrator. Invariant 1 and simplicity considerations both argue against giving the container network access to the operator's local forex-ml dashboard. The orchestrator is the hub.
+
+### New Open Questions — from the 2026-04-10 implementation work
+
+5. **Dispatch idempotency on orchestrator crash.** Currently: if the orchestrator crashes mid-dispatch, the sub-session continues running on Anthropic's side until its own idle timeout. The stuck `dispatch_sessions` row stays in `status='running'`. On orchestrator restart, there is no reconciliation sweep — the parent session's stream doesn't replay the triggering message (idle sessions don't replay), so no re-dispatch occurs, but the orphaned sub-session is invisible. Proposed fix: a startup sweep that queries `WHERE status='running'` and either (a) reopens the stream to consume any remaining events, or (b) marks the row failed and moves on.
+
+6. **Parallel dispatch.** Serial is the MVP constraint. A Quad (4 nodes) takes ~4× the time of a single dispatch. Wrapping `_run_sub_session` in a thread pool is the upgrade path; the fence protocol doesn't change.
+
+7. **Cost rollup across parent + sub-sessions.** `otel_cost_tracking` is parent-only (driven by parent SSE `span.model_request_end` events). Per-dispatch costs live in `dispatch_sessions.cost_usd`. There is no single "what did this task cost me?" query — the operator must sum both.
+
+8. **Per-dispatch token ceiling.** No budget enforcement inside `DispatchManager` beyond the wall-clock `max_dispatch_seconds`. A runaway node could burn substantial tokens before hitting the 10-minute cutoff. A budget wrapper integrating with the base `orch_budget_limits` table is a clean extension.
+
+9. **`orch_tasks` is never written by the cloud Kernel.** This has always been true — no cloud session has written a task row. Base ora-kernel relied on the Agent tool's dispatch events to create task rows. In the cloud, the dispatch subsystem could plausibly write `orch_tasks` rows from `DispatchManager.handle_message` on behalf of the Kernel. Not done yet — call-out for future work.
 
 ---
 
