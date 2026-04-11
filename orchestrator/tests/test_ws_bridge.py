@@ -30,10 +30,6 @@ def bridge():
     """Start a WebSocketBridge on an ephemeral port and tear it down after."""
     b = WebSocketBridge(host="127.0.0.1", port=0)  # port=0 -> OS picks
     b.start()
-    # Wait up to 2s for the bridge to become ready
-    deadline = time.time() + 2.0
-    while b.port is None and time.time() < deadline:
-        time.sleep(0.01)
     assert b.port is not None, "bridge failed to bind"
     yield b
     b.stop()

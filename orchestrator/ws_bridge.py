@@ -28,6 +28,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from typing import Any, Callable, Dict, Optional, Set
 
 import websockets
@@ -73,14 +74,35 @@ class WebSocketBridge:
 
     # ── Lifecycle ───────────────────────────────────────────────────
 
-    def start(self) -> None:
-        """Spin up the bridge in a background daemon thread."""
+    def start(self, bind_timeout: float = 5.0) -> None:
+        """Spin up the bridge in a background daemon thread.
+
+        Blocks until the bridge has bound its port (so callers can read
+        ``self.port`` immediately after start returns) or ``bind_timeout``
+        seconds have elapsed. If the timeout fires without a successful
+        bind, raises ``RuntimeError`` so the caller can fall back to
+        running without the dashboard bridge.
+        """
         if self._thread is not None and self._thread.is_alive():
             return  # already running
         self._thread = threading.Thread(
             target=self._thread_main, name="ws-bridge", daemon=True
         )
         self._thread.start()
+        # Wait for the background thread to finish binding. Poll briefly
+        # because _serve_forever sets self.port only after async websockets.serve
+        # has returned its Server object on the other thread.
+        deadline = time.time() + bind_timeout
+        while self.port is None and time.time() < deadline:
+            if not self._thread.is_alive():
+                raise RuntimeError(
+                    "ws_bridge: background thread exited before binding"
+                )
+            time.sleep(0.01)
+        if self.port is None:
+            raise RuntimeError(
+                f"ws_bridge: failed to bind within {bind_timeout}s"
+            )
 
     def stop(self) -> None:
         """Shut down the bridge gracefully."""
