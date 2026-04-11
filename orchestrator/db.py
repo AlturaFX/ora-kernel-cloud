@@ -97,3 +97,94 @@ class Database:
             cur.execute("SELECT content FROM kernel_files_sync WHERE file_path = %s", (file_path,))
             row = cur.fetchone()
             return row["content"] if row else None
+
+    # ── Dispatch subsystem helpers ────────────────────────────────────
+
+    def get_dispatch_agent(self, node_name: str) -> Optional[dict]:
+        """Return {'agent_id', 'prompt_hash'} for a cached node agent, or None."""
+        with self.cursor() as cur:
+            cur.execute(
+                "SELECT agent_id, prompt_hash FROM dispatch_agents WHERE node_name=%s",
+                (node_name,),
+            )
+            return cur.fetchone()
+
+    def upsert_dispatch_agent(
+        self, node_name: str, agent_id: str, prompt_hash: str
+    ) -> None:
+        """Cache or refresh the Anthropic agent ID for a node."""
+        with self.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO dispatch_agents (node_name, agent_id, prompt_hash)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (node_name)
+                DO UPDATE SET agent_id = %s, prompt_hash = %s, created_at = NOW()
+                """,
+                (node_name, agent_id, prompt_hash, agent_id, prompt_hash),
+            )
+
+    def record_dispatch_start(
+        self,
+        sub_session_id: str,
+        parent_session_id: str,
+        node_name: str,
+        input_data: dict,
+    ) -> None:
+        """Insert a fresh dispatch_sessions row with status='running'."""
+        with self.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO dispatch_sessions
+                    (sub_session_id, parent_session_id, node_name, status, input_data)
+                VALUES (%s, %s, %s, 'running', %s)
+                """,
+                (sub_session_id, parent_session_id, node_name, json.dumps(input_data)),
+            )
+
+    def record_dispatch_complete(
+        self,
+        sub_session_id: str,
+        output_data: dict,
+        input_tokens: int,
+        output_tokens: int,
+        cost_usd: float,
+        duration_ms: int,
+    ) -> None:
+        """Mark a dispatch row complete with its final metrics."""
+        with self.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE dispatch_sessions
+                SET status       = 'complete',
+                    output_data  = %s,
+                    input_tokens = %s,
+                    output_tokens= %s,
+                    cost_usd     = %s,
+                    duration_ms  = %s,
+                    completed_at = NOW()
+                WHERE sub_session_id = %s
+                """,
+                (
+                    json.dumps(output_data),
+                    input_tokens,
+                    output_tokens,
+                    cost_usd,
+                    duration_ms,
+                    sub_session_id,
+                ),
+            )
+
+    def record_dispatch_failure(self, sub_session_id: str, error: str) -> None:
+        """Mark a dispatch row failed with an error description."""
+        with self.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE dispatch_sessions
+                SET status       = 'failed',
+                    error        = %s,
+                    completed_at = NOW()
+                WHERE sub_session_id = %s
+                """,
+                (error, sub_session_id),
+            )
