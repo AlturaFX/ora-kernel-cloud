@@ -122,3 +122,58 @@ def test_node_spec_hash_is_content_addressed(tmp_path):
     (tmp_path / "valid_node.md").write_text("different content")
     h2 = manager._spec_hash("valid_node")
     assert h1 != h2
+
+
+# ── Agent get-or-create ─────────────────────────────────────────────
+
+from types import SimpleNamespace
+
+
+def test_ensure_agent_creates_fresh_agent_when_cache_empty(tmp_path):
+    manager, db, client, _ = _make_manager(tmp_path)
+    db.get_dispatch_agent.return_value = None
+    client.beta.agents.create.return_value = SimpleNamespace(id="agent_new")
+
+    agent_id = manager._ensure_agent("valid_node")
+
+    assert agent_id == "agent_new"
+    client.beta.agents.create.assert_called_once()
+    call = client.beta.agents.create.call_args
+    assert call.kwargs["name"] == "ora-dispatch-valid_node"
+    assert "ValidNode" in call.kwargs["system"]
+    assert call.kwargs["tools"] == [{"type": "agent_toolset_20260401"}]
+    db.upsert_dispatch_agent.assert_called_once()
+    upsert_kwargs = db.upsert_dispatch_agent.call_args.kwargs
+    assert upsert_kwargs["node_name"] == "valid_node"
+    assert upsert_kwargs["agent_id"] == "agent_new"
+    assert len(upsert_kwargs["prompt_hash"]) == 64
+
+
+def test_ensure_agent_reuses_cached_agent_when_hash_matches(tmp_path):
+    manager, db, client, _ = _make_manager(tmp_path)
+    current_hash = manager._spec_hash("valid_node")
+    db.get_dispatch_agent.return_value = {
+        "agent_id": "agent_cached",
+        "prompt_hash": current_hash,
+    }
+
+    agent_id = manager._ensure_agent("valid_node")
+
+    assert agent_id == "agent_cached"
+    client.beta.agents.create.assert_not_called()
+    db.upsert_dispatch_agent.assert_not_called()
+
+
+def test_ensure_agent_rebuilds_when_spec_hash_drifts(tmp_path):
+    manager, db, client, _ = _make_manager(tmp_path)
+    db.get_dispatch_agent.return_value = {
+        "agent_id": "agent_stale",
+        "prompt_hash": "stale_hash_0000",
+    }
+    client.beta.agents.create.return_value = SimpleNamespace(id="agent_rebuilt")
+
+    agent_id = manager._ensure_agent("valid_node")
+
+    assert agent_id == "agent_rebuilt"
+    client.beta.agents.create.assert_called_once()
+    db.upsert_dispatch_agent.assert_called_once()

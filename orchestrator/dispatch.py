@@ -130,3 +130,35 @@ class DispatchManager:
     def _spec_hash(self, node_name: str) -> str:
         content = self._load_node_spec(node_name)
         return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    # ── Agent cache ─────────────────────────────────────────────────
+
+    def _ensure_agent(self, node_name: str) -> str:
+        """Return a Managed Agent ID for *node_name*, creating one if needed.
+
+        The cache is keyed on node name with a content-hash tiebreaker:
+        if the node spec file on disk has changed since the cached agent
+        was created, we create a fresh agent and overwrite the cache
+        entry. Stale agents are not deleted — they simply stop being
+        referenced and accrue no cost.
+        """
+        current_hash = self._spec_hash(node_name)
+        cached = self.db.get_dispatch_agent(node_name)
+        if cached is not None and cached.get("prompt_hash") == current_hash:
+            logger.debug("dispatch: reusing cached agent for %s", node_name)
+            return cached["agent_id"]
+
+        spec = self._load_node_spec(node_name)
+        logger.info("dispatch: creating fresh agent for node %s", node_name)
+        agent = self.client.beta.agents.create(
+            name=f"ora-dispatch-{node_name}",
+            model="claude-opus-4-6",
+            system=spec,
+            tools=[{"type": "agent_toolset_20260401"}],
+        )
+        self.db.upsert_dispatch_agent(
+            node_name=node_name,
+            agent_id=agent.id,
+            prompt_hash=current_hash,
+        )
+        return agent.id
