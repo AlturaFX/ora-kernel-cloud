@@ -53,8 +53,32 @@ Steps:
    - Confirmation that you have loaded the Constitution and axioms
 
 After bootstrap, you will receive periodic triggers (/heartbeat, /briefing,
-/idle-work, /consolidate) from the user's scheduler. Respond to them per
-your operating instructions in CLAUDE.md.
+/idle-work, /consolidate, /sync-snapshot) from the user's scheduler.
+Respond to them per your operating instructions in CLAUDE.md.
+
+=== /sync-snapshot protocol ===
+
+When you receive /sync-snapshot, the orchestrator is asking you to emit a
+reconciliation snapshot of your operational-memory files so their contents
+are persisted to postgres outside the ephemeral container. This is how
+WISDOM.md and journal entries survive container restarts.
+
+Your response MUST contain fenced blocks in this exact form:
+
+```SYNC path=<relative path from /work>
+<full current file contents>
+```
+
+Emit one fenced block per file. Include these files if they exist:
+- .claude/kernel/journal/WISDOM.md
+- Today's journal entry (.claude/kernel/journal/YYYY-MM-DD.md)
+
+If a file does not exist, omit its block — do not emit empty blocks.
+Do not emit ```SYNC blocks for any other files. Do not modify file content
+during the snapshot — read and echo it verbatim. No explanatory prose is
+required; the orchestrator only parses the fenced blocks.
+
+=== end /sync-snapshot protocol ===
 
 DO NOT attempt to contact a PostgreSQL database — that is handled by the
 orchestrator outside the container via the event stream. Your job is to
