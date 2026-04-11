@@ -29,6 +29,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
 
@@ -93,9 +95,16 @@ class DispatchManager:
         Directory containing node spec markdown files. A dispatch with
         ``node=business_analyst`` reads ``<dir>/business_analyst.md``.
     max_dispatch_seconds : float
-        Hard timeout on a single dispatch. Sessions that do not reach
-        idle within this window are reported as FAILED with a timeout
-        error. Default 120s.
+        Wall-clock ceiling on a single dispatch. Sessions that do not
+        reach idle within this window are reported as FAILED with a
+        timeout error. Default 600s (10 min) — accommodates real node
+        work with tool-use round trips. Checked on every event receipt
+        AND as an HTTP read deadline so a quiet stream cannot wedge us.
+    stream_read_timeout_seconds : float
+        Maximum time to wait for the next event on the SSE stream
+        before declaring the stream stalled. Default 180s (3 min).
+        Must be < max_dispatch_seconds. A stall is reported as
+        FAILED with a 'sub-session stream stalled' error.
     """
 
     def __init__(
@@ -105,7 +114,8 @@ class DispatchManager:
         environment_id: str,
         send_to_parent: SendToParent,
         node_spec_dir: Path,
-        max_dispatch_seconds: float = 120.0,
+        max_dispatch_seconds: float = 600.0,
+        stream_read_timeout_seconds: float = 180.0,
     ):
         self.db = db
         self.client = client
@@ -113,6 +123,7 @@ class DispatchManager:
         self.send_to_parent = send_to_parent
         self.node_spec_dir = Path(node_spec_dir)
         self.max_dispatch_seconds = max_dispatch_seconds
+        self.stream_read_timeout_seconds = stream_read_timeout_seconds
 
     # ── Node spec loading ───────────────────────────────────────────
 
@@ -222,35 +233,58 @@ class DispatchManager:
         t_start = time.time()
         terminated_error: Optional[str] = None
 
-        with self.client.beta.sessions.events.stream(sub_session_id) as stream:
-            for event in stream:
-                if time.time() - t_start > self.max_dispatch_seconds:
-                    terminated_error = (
-                        f"dispatch exceeded max_dispatch_seconds="
-                        f"{self.max_dispatch_seconds}"
-                    )
-                    break
+        # httpx.Timeout with a finite *read* timeout acts as our
+        # stall watchdog — if no bytes arrive for stream_read_timeout_seconds
+        # the iterator raises httpx.ReadTimeout and we exit cleanly.
+        # connect/write/pool are kept at SDK defaults (5.0).
+        stream_timeout = httpx.Timeout(
+            connect=5.0,
+            read=self.stream_read_timeout_seconds,
+            write=5.0,
+            pool=5.0,
+        )
 
-                event_type = getattr(event, "type", "")
+        try:
+            with self.client.beta.sessions.events.stream(
+                sub_session_id, timeout=stream_timeout
+            ) as stream:
+                for event in stream:
+                    if time.time() - t_start > self.max_dispatch_seconds:
+                        terminated_error = (
+                            f"dispatch exceeded max_dispatch_seconds="
+                            f"{self.max_dispatch_seconds}"
+                        )
+                        break
 
-                if event_type == "span.model_request_end":
-                    usage = getattr(event, "model_usage", None)
-                    input_tokens += getattr(usage, "input_tokens", 0) or 0
-                    output_tokens += getattr(usage, "output_tokens", 0) or 0
+                    event_type = getattr(event, "type", "")
 
-                elif event_type == "agent.message":
-                    for block in getattr(event, "content", []) or []:
-                        text = getattr(block, "text", None)
-                        if text:
-                            response_text += text
+                    if event_type == "span.model_request_end":
+                        usage = getattr(event, "model_usage", None)
+                        input_tokens += getattr(usage, "input_tokens", 0) or 0
+                        output_tokens += getattr(usage, "output_tokens", 0) or 0
 
-                elif event_type == "session.status_idle":
-                    break
+                    elif event_type == "agent.message":
+                        for block in getattr(event, "content", []) or []:
+                            text = getattr(block, "text", None)
+                            if text:
+                                response_text += text
 
-                elif event_type == "session.status_terminated":
-                    err = getattr(event, "error", None)
-                    terminated_error = str(err) if err else "sub-session terminated"
-                    break
+                    elif event_type == "session.status_idle":
+                        break
+
+                    elif event_type == "session.status_terminated":
+                        err = getattr(event, "error", None)
+                        terminated_error = str(err) if err else "sub-session terminated"
+                        break
+        except httpx.ReadTimeout:
+            terminated_error = (
+                f"sub-session stream stalled: no events for "
+                f"{self.stream_read_timeout_seconds}s"
+            )
+            logger.warning("dispatch: %s (%s)", terminated_error, sub_session_id)
+        except httpx.TimeoutException as exc:
+            terminated_error = f"sub-session stream timeout: {exc}"
+            logger.warning("dispatch: %s (%s)", terminated_error, sub_session_id)
 
         duration_ms = int((time.time() - t_start) * 1000)
         cost_usd = self._cost_usd(input_tokens, output_tokens)
