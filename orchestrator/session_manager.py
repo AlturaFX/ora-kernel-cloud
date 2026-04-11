@@ -47,6 +47,61 @@ required outside the fences; the orchestrator only parses the fenced blocks.
 === end /sync-snapshot protocol ==="""
 
 
+# Protocol the Kernel must follow to request a subagent dispatch.
+# The Managed Agent toolset does not expose an Agent/Task tool, so the
+# Kernel signals dispatch intent via fenced blocks in its response. The
+# orchestrator's DispatchManager parses these, creates a focused sub-
+# session per dispatch, consumes events, and returns the result as a
+# ```DISPATCH_RESULT``` fence sent back to the Kernel as a user.message.
+DISPATCH_PROTOCOL = """=== dispatch protocol ===
+
+You do NOT have an Agent, Task, or subagent-dispatch tool in this
+environment. The CLAUDE.md dispatch instructions that reference an
+"Agent tool" are obsolete in the cloud. Use this fence-based protocol
+instead.
+
+To dispatch a node, emit a single fenced block in your response:
+
+```DISPATCH node=<node_name>
+{
+  "task": "<task description>",
+  "input": { ... node-specific input fields ... },
+  "budget_size": "S" | "M" | "L"
+}
+```
+
+Rules:
+- `node_name` is the base filename of the node spec (e.g. `business_analyst`,
+  `node_designer`) without the `.md` suffix or directory prefix.
+- The body MUST be valid JSON — the orchestrator will silently skip
+  unparseable fences.
+- Emit ONE dispatch per message to start. Multiple fences in one message
+  will all be dispatched, but serially — they do not run in parallel.
+- After emitting a DISPATCH fence, wait. The orchestrator will reply
+  with a `user.message` containing a single fenced block:
+
+```DISPATCH_RESULT node=<node_name> status=<complete|failed>
+{
+  "output": "<subagent's full text response>",
+  "tokens": { "input": N, "output": N },
+  "cost_usd": N,
+  "duration_ms": N,
+  "sub_session_id": "<id>",
+  "error": null | "<error description>"
+}
+```
+
+- Treat the DISPATCH_RESULT as the authoritative return of the node.
+- On `status=failed`, apply Axiom 5 — analyze the error, do NOT retry
+  the same dispatch blindly. Consider whether a different node, a
+  reformulated input, or a HITL escalation is appropriate.
+- Per Axiom 2 (Objective Verification), after a worker node returns
+  UNVERIFIED, dispatch its paired verifier node in a SEPARATE
+  DISPATCH fence — never combine worker and verifier into one call.
+
+=== end dispatch protocol ==="""
+
+
 BOOTSTRAP_PROMPT = """Bootstrap: Set up the ORA Kernel workspace.
 
 IMPORTANT: You are running inside a cloud container. You do NOT have
@@ -88,6 +143,8 @@ After bootstrap, you will receive periodic triggers (/heartbeat, /briefing,
 Respond to them per your operating instructions in CLAUDE.md.
 
 {sync_snapshot_protocol}
+
+{dispatch_protocol}
 
 DO NOT attempt to contact a PostgreSQL database — that is handled by the
 orchestrator outside the container via the event stream. Your job is to
@@ -177,6 +234,7 @@ class SessionManager:
         prompt = BOOTSTRAP_PROMPT.format(
             repo_url=repo_url,
             sync_snapshot_protocol=SYNC_SNAPSHOT_PROTOCOL,
+            dispatch_protocol=DISPATCH_PROTOCOL,
             hydration_instructions=hydration,
         )
 
@@ -230,6 +288,27 @@ class SessionManager:
                 "content": [{"type": "text", "text": content}],
             }],
         )
+
+    def send_protocol_refresh(self) -> None:
+        """Re-teach the current SYNC + DISPATCH protocols to the active session.
+
+        Resumed sessions were bootstrapped with whatever protocol was
+        current at creation time. On every daemon boot we send a single
+        user.message with the latest protocols so the Kernel's behavior
+        always matches the orchestrator's parser — no silent drift.
+        """
+        if not self.session_id:
+            return
+        message = (
+            "PROTOCOL REFRESH — the orchestrator has just (re)started. "
+            "Please adopt the following protocols for the rest of this "
+            "session. If your bootstrap already contained them, treat "
+            "this as a harmless reminder.\n\n"
+            f"{SYNC_SNAPSHOT_PROTOCOL}\n\n"
+            f"{DISPATCH_PROTOCOL}"
+        )
+        self.send_message(message)
+        logger.info("Sent protocol refresh to %s", self.session_id)
 
     def send_tool_confirmation(self, tool_use_id: str, approved: bool, reason: str = ""):
         """Send HITL approval/denial for a tool call."""

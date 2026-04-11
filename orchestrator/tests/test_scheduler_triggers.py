@@ -49,14 +49,18 @@ def test_scheduler_registers_sync_snapshot_with_full_trigger_message():
 def test_bootstrap_prompt_still_embeds_protocol():
     """Refactoring the protocol into a constant must not break the
     bootstrap prompt — new sessions still need to learn it at boot."""
-    from orchestrator.session_manager import BOOTSTRAP_PROMPT
+    from orchestrator.session_manager import (
+        BOOTSTRAP_PROMPT,
+        DISPATCH_PROTOCOL,
+    )
 
-    # BOOTSTRAP_PROMPT is a template that gets .format()ed at send time,
-    # so we format it with dummy values before asserting.
     rendered = BOOTSTRAP_PROMPT.format(
         repo_url="https://example.com/repo.git",
         sync_snapshot_protocol=SYNC_SNAPSHOT_PROTOCOL,
+        dispatch_protocol=DISPATCH_PROTOCOL,
         hydration_instructions="",
     )
     assert "```SYNC path=" in rendered
     assert "/sync-snapshot" in rendered
+    assert "```DISPATCH node=" in rendered
+    assert "DISPATCH_RESULT" in rendered
