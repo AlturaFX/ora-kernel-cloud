@@ -138,3 +138,39 @@ def test_capitalized_edit_also_routes_to_file_sync():
         _edit_event("/work/.claude/kernel/journal/WISDOM.md", "a", "b", tool_name="Edit"),
     )
     fs.handle_edit.assert_called_once()
+
+
+def test_message_event_routes_to_dispatch_manager():
+    fs = MagicMock()
+    dm = MagicMock()
+    db = MagicMock()
+    consumer = EventConsumer(
+        db=db,
+        api_key="sk-test",
+        agent_id="agent_test",
+        environment_id="env_test",
+        file_sync=fs,
+        dispatch_manager=dm,
+    )
+    event = _message_event(
+        "```DISPATCH node=foo\n{\"task\":\"x\"}\n```"
+    )
+    consumer._handle_message("sess_parent", event)
+
+    dm.handle_message.assert_called_once()
+    args = dm.handle_message.call_args
+    assert args.args[0] == "sess_parent"
+    assert "DISPATCH node=foo" in args.args[1]
+    # file_sync should also still be called — both paths fire on every message
+    fs.handle_snapshot_response.assert_called_once()
+
+
+def test_dispatch_manager_is_optional():
+    consumer = EventConsumer(
+        db=MagicMock(),
+        api_key="sk-test",
+        agent_id="agent_test",
+        environment_id="env_test",
+    )
+    # No dispatch_manager passed — should not raise
+    consumer._handle_message("sess_parent", _message_event("plain message"))

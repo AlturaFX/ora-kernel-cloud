@@ -17,6 +17,7 @@ from anthropic import Anthropic
 from orchestrator.db import Database
 
 if TYPE_CHECKING:
+    from orchestrator.dispatch import DispatchManager
     from orchestrator.file_sync import FileSync
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,7 @@ class EventConsumer:
         on_event: Optional[Callable[[Any], None]] = None,
         on_hitl_needed: Optional[Callable[[Any], None]] = None,
         file_sync: Optional["FileSync"] = None,
+        dispatch_manager: Optional["DispatchManager"] = None,
     ):
         self.db = db
         self.client = Anthropic(api_key=api_key)
@@ -92,6 +94,7 @@ class EventConsumer:
         self.on_event = on_event
         self.on_hitl_needed = on_hitl_needed
         self.file_sync = file_sync
+        self.dispatch_manager = dispatch_manager
         self.totals = SessionTotals()
 
     # ── Public API ────────────────────────────────────────────────────
@@ -164,11 +167,18 @@ class EventConsumer:
             action="MESSAGE",
             details={"text": preview},
         )
-        if self.file_sync is not None and full_text:
+        if not full_text:
+            return
+        if self.file_sync is not None:
             try:
                 self.file_sync.handle_snapshot_response(full_text)
             except Exception:
                 logger.exception("file_sync snapshot handler failed")
+        if self.dispatch_manager is not None:
+            try:
+                self.dispatch_manager.handle_message(session_id, full_text)
+            except Exception:
+                logger.exception("dispatch_manager.handle_message failed")
 
     def _handle_tool_use(self, session_id: str, event: Any) -> None:
         tool_name = getattr(event, "name", "unknown")
