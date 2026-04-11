@@ -165,6 +165,45 @@ def main():
         ws_bridge=ws_bridge,
     )
 
+    # Snapshot provider: late-joining dashboard clients receive the
+    # current parent session and recent dispatches as synthetic
+    # NODE_UPDATE/EDGE_UPDATE frames before subscribing to live events.
+    if ws_bridge is not None:
+        def _build_snapshot():
+            """Collect current-state envelopes for newly-connected clients."""
+            frames = []
+            try:
+                parent = db.get_current_parent_session()
+                if parent is not None:
+                    frames.append(ws_events.system_status(
+                        session_id=parent.get("session_id", ""),
+                        status=parent.get("status", "unknown"),
+                        total_cost_usd=float(parent.get("total_cost_usd") or 0),
+                    ))
+                for row in db.get_recent_dispatches(limit=20):
+                    frames.append(ws_events.node_update(
+                        node_id=row["sub_session_id"],
+                        parent_id=row["parent_session_id"],
+                        node_name=row["node_name"],
+                        status=row["status"],
+                        tokens={
+                            "input": row["input_tokens"] or 0,
+                            "output": row["output_tokens"] or 0,
+                        },
+                        cost_usd=float(row["cost_usd"] or 0),
+                        duration_ms=row["duration_ms"],
+                        error=row.get("error"),
+                    ))
+                    frames.append(ws_events.edge_update(
+                        from_id=row["parent_session_id"],
+                        to_id=row["sub_session_id"],
+                    ))
+            except Exception:
+                logger.exception("snapshot provider failed")
+            return frames
+
+        ws_bridge.snapshot_provider = _build_snapshot
+
     # Event consumer
     consumer = EventConsumer(
         db=db,

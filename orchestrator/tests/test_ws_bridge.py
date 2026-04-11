@@ -165,3 +165,46 @@ def test_inbound_invalid_json_is_ignored(bridge):
             assert ws.state == OPEN
 
     _run(go())
+
+
+def test_new_client_receives_snapshot_on_connect(bridge):
+    """A snapshot_provider set on the bridge is called on each new
+    connection, and its return envelopes are sent to only that client
+    before the client starts receiving broadcasts."""
+    sent = []
+
+    def provide_snapshot():
+        return [
+            system_status("sesn_parent", "running"),
+            system_status("sesn_parent", "running"),  # two snapshot frames
+        ]
+
+    bridge.snapshot_provider = provide_snapshot
+
+    async def go():
+        async with websockets.connect(f"ws://127.0.0.1:{bridge.port}") as ws:
+            msg1 = json.loads(await asyncio.wait_for(ws.recv(), 1.0))
+            msg2 = json.loads(await asyncio.wait_for(ws.recv(), 1.0))
+            sent.append(msg1)
+            sent.append(msg2)
+
+    _run(go())
+    assert len(sent) == 2
+    assert all(m["event_type"] == "SYSTEM_STATUS" for m in sent)
+
+
+def test_snapshot_provider_exception_does_not_drop_client(bridge):
+    def bad_snapshot():
+        raise RuntimeError("db is down")
+
+    bridge.snapshot_provider = bad_snapshot
+
+    async def go():
+        async with websockets.connect(f"ws://127.0.0.1:{bridge.port}") as ws:
+            await asyncio.sleep(0.05)
+            bridge.broadcast(system_status("sesn_x", "running"))
+            msg = json.loads(await asyncio.wait_for(ws.recv(), 1.0))
+            return msg
+
+    result = _run(go())
+    assert result["event_type"] == "SYSTEM_STATUS"

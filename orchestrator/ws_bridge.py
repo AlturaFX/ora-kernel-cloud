@@ -66,6 +66,11 @@ class WebSocketBridge:
         self.on_abort: Optional[Callable[[], None]] = None
         self.on_hitl_response: Optional[Callable[[Dict[str, Any]], None]] = None
 
+        # Caller may set this to a function returning a list of envelopes
+        # to send to each new client on connect (used for late-joining
+        # dashboards to see current state).
+        self.snapshot_provider: Optional[Callable[[], list]] = None
+
     # ── Lifecycle ───────────────────────────────────────────────────
 
     def start(self) -> None:
@@ -133,6 +138,17 @@ class WebSocketBridge:
     # ── Client handler ─────────────────────────────────────────────
 
     async def _handler(self, ws) -> None:
+        # Send snapshot frames first, BEFORE adding to the broadcast set,
+        # so the new client receives them in a defined order without
+        # interleaving live broadcasts.
+        if self.snapshot_provider is not None:
+            try:
+                frames = self.snapshot_provider() or []
+                for envelope in frames:
+                    await ws.send(json.dumps(envelope, default=str))
+            except Exception:
+                logger.exception("ws_bridge: snapshot_provider failed")
+
         self._clients.add(ws)
         logger.info("ws_bridge: client connected (%d total)", len(self._clients))
         loop = asyncio.get_running_loop()
